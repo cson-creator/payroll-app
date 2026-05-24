@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   const parsed = Papa.parse(text, {
     header: true,
     skipEmptyLines: true,
-    transformHeader: h => h.trim(),
+    transformHeader: (h: string) => h.trim(),
   })
 
   if (parsed.errors.length > 0) {
