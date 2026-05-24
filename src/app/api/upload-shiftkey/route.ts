@@ -18,6 +18,25 @@ export async function POST(req: NextRequest) {
   const ws = wb.Sheets[wb.SheetNames[0]]
   const rows = XLSX.utils.sheet_to_json<Record<string, any>>(ws)
 
+  // Validate that the ShiftKey file matches the selected facility
+  const { data: facility } = await supabaseAdmin
+    .from('facilities')
+    .select('name')
+    .eq('id', facilityId)
+    .single()
+
+  if (facility && rows.length > 0) {
+    const fileSlug = String(rows[0]['Facility'] || '').toLowerCase()
+    const facSlug = facility.name.toLowerCase()
+    const keyword = facSlug.split(' ')[0] // 'chandler', 'briarcliff', 'waco'
+    if (fileSlug && !fileSlug.includes(keyword)) {
+      return NextResponse.json(
+        { error: `File appears to be for "${rows[0]['Facility']}" but selected facility is "${facility.name}". Please check your selection.` },
+        { status: 400 }
+      )
+    }
+  }
+
   // Group hours by date + specialty (sum multiple shifts)
   const grouped: Record<string, Record<string, number>> = {}
 

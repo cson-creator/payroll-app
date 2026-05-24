@@ -4,9 +4,9 @@ import { ALL_DEPARTMENTS } from '@/lib/departments'
 
 export async function POST() {
   const facilities = [
-    { name: 'Chandler Nursing Center',  slug: 'chandler',   cms_id: '455910', passcode: 'chandler123',   email_contacts: [] },
-    { name: 'Briarcliff Nursing Center', slug: 'briarcliff', cms_id: '',       passcode: 'briarcliff123', email_contacts: [] },
-    { name: 'Waco Nursing Center',       slug: 'waco',       cms_id: '',       passcode: 'waco123',       email_contacts: [] },
+    { name: 'Chandler Nursing Center',   slug: 'chandler',   cms_id: '455910', passcode: 'CHANDLER_75758',   email_contacts: [chana@greenlightec.com] },
+    { name: 'Briarcliff Nursing Center', slug: 'briarcliff', cms_id: '',       passcode: 'BRIARCLIFF_75701', email_contacts: [chana@greenlightec.com] },
+    { name: 'Waco Healthcare and Rehabilitation',       slug: 'waco',       cms_id: '',       passcode: 'WACO_76708',       email_contacts: [chana@greenlightec.com] },
   ]
 
   for (const fac of facilities) {
