@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
       if (!cc2_name) return null
       return { facility_id: facilityId, date, cc2_name, reg_hours, ot_hours }
     })
-    .filter(Boolean)
+    .filter((r): r is NonNullable<typeof r> => r !== null)
 
   const { error } = await supabaseAdmin
     .from('daily_empeon')
