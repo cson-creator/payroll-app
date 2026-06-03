@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
       const regKey = Object.keys(row).find(k => k.toLowerCase().includes('reg'))
       const otKey = Object.keys(row).find(k => k.toLowerCase().includes('ot') || k.toLowerCase().includes('over'))
 
-      const cc2_name = row[posKey]?.trim()
+      const cc2_name = row[posKey]?.trim().replace(/^\d+-/, '')
       const reg_hours = parseFloat(row[regKey || ''] || '0') || 0
       const ot_hours = parseFloat(row[otKey || ''] || '0') || 0
 
