@@ -33,6 +33,7 @@ export default function Home() {
   const [censusSaved, setCensusSaved] = useState(false)
 
   const [reportData, setReportData] = useState<ReportData | null>(null)
+  const [reportDate, setReportDate] = useState<string>(yesterday)
   const [loadingReport, setLoadingReport] = useState(false)
   const [generatingPDF, setGeneratingPDF] = useState(false)
   const [sendingEmail, setSendingEmail] = useState(false)
@@ -46,11 +47,12 @@ export default function Home() {
     })
   }, [])
 
-  // Pre-load census from DB for the date
+  // Pre-load census from DB when date changes
   useEffect(() => {
     if (!selectedFacility || !authed || !censusDate) return
     supabase.from('daily_census').select('census').eq('facility_id', selectedFacility.id).eq('date', censusDate).single().then(({ data }) => {
       if (data) setCensus(String(data.census))
+      else setCensus('')
     })
   }, [selectedFacility, authed, censusDate])
 
@@ -69,6 +71,16 @@ export default function Home() {
     } else {
       setAuthError('Incorrect passcode')
     }
+  }
+
+  function handleDateChange(date: string) {
+    setUploadDate(date)
+    setCensusDate(date)
+    // Clear census display so it reloads for the new date
+    setCensus('')
+    setCensusSaved(false)
+    // Clear any existing report so it doesn't show stale data for the old date
+    setReportData(null)
   }
 
   async function handleEmpeonUpload(file: File) {
@@ -90,6 +102,7 @@ export default function Home() {
     const fd = new FormData()
     fd.append('file', file)
     fd.append('facilityId', selectedFacility.id)
+    fd.append('date', uploadDate)
     const res = await fetch('/api/upload-shiftkey', { method: 'POST', body: fd })
     const json = await res.json()
     if (res.ok) { setShiftkeyStatus('success'); setShiftkeyMsg(`✓ ${json.rowsIngested} agency rows ingested`) }
@@ -107,9 +120,11 @@ export default function Home() {
 
   async function handleLoadReport() {
     setLoadingReport(true)
-    const res = await fetch(`/api/report-data?facilityId=${selectedFacility.id}`)
+    // Pass the operator-selected date so the report focuses on that day
+    const res = await fetch(`/api/report-data?facilityId=${selectedFacility.id}&reportDate=${uploadDate}`)
     const data = await res.json()
     setReportData(data)
+    setReportDate(uploadDate)
     setLoadingReport(false)
   }
 
@@ -119,7 +134,7 @@ export default function Home() {
     const imgData = canvas.toDataURL('image/png')
     const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: [canvas.width / 2, canvas.height / 2] })
     pdf.addImage(imgData, 'PNG', 0, 0, canvas.width / 2, canvas.height / 2)
-    return pdf.output('datauristring').split(',')[1] // base64
+    return pdf.output('datauristring').split(',')[1]
   }
 
   async function handleGeneratePDF() {
@@ -127,7 +142,7 @@ export default function Home() {
     const base64 = await generatePDF()
     const link = document.createElement('a')
     link.href = `data:application/pdf;base64,${base64}`
-    link.download = `${selectedFacility.name.replace(/\s+/g,'_')}_Payroll_${format(new Date(),'yyyy-MM-dd')}.pdf`
+    link.download = `${selectedFacility.name.replace(/\s+/g,'_')}_Payroll_${reportDate}.pdf`
     link.click()
     setGeneratingPDF(false)
   }
@@ -139,7 +154,7 @@ export default function Home() {
     const res = await fetch('/api/send-report', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ facilityId: selectedFacility.id, pdfBase64: base64, reportDate: format(new Date(), 'yyyy-MM-dd') }),
+      body: JSON.stringify({ facilityId: selectedFacility.id, pdfBase64: base64, reportDate }),
     })
     const json = await res.json()
     if (res.ok) setEmailMsg('✓ Report sent successfully')
@@ -202,8 +217,8 @@ export default function Home() {
             <div style={s.card}>
               <div style={{ fontSize:14, fontWeight:600, marginBottom:16 }}>Upload data</div>
               <div style={{ marginBottom:12 }}>
-                <label style={s.label}>Data date (for Empeon + census)</label>
-                <input type="date" value={uploadDate} onChange={e => { setUploadDate(e.target.value); setCensusDate(e.target.value) }} style={{ ...s.input, width:180 }} />
+                <label style={s.label}>Report date — Empeon, ShiftKey, and census will all be saved under this date</label>
+                <input type="date" value={uploadDate} onChange={e => handleDateChange(e.target.value)} style={{ ...s.input, width:180 }} />
               </div>
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:16 }}>
                 <UploadZone label="Empeon CSV" accept=".csv" onFile={handleEmpeonUpload} status={empeonStatus} message={empeonMsg} />
@@ -214,9 +229,12 @@ export default function Home() {
                   <label style={s.label}>Census for {uploadDate}</label>
                   <input type="number" value={census} onChange={e => { setCensus(e.target.value); setCensusSaved(false) }} style={{ ...s.input, width:120 }} placeholder="e.g. 66" />
                 </div>
-                <button onClick={handleSaveCensus} style={{ ...s.btn('#3B6D11','#EAF3DE'), marginBottom:0 }}>
-                  {censusSaved ? '✓ Saved' : 'Save census'}
-                </button>
+                <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
+                  <button onClick={handleSaveCensus} style={{ ...s.btn('#3B6D11','#EAF3DE') }}>
+                    {censusSaved ? '✓ Saved' : 'Save census'}
+                  </button>
+                  <div style={{ fontSize:10, color:'#9A9890', textAlign:'center' }}>Required for PPD</div>
+                </div>
               </div>
             </div>
 
@@ -224,7 +242,9 @@ export default function Home() {
             <div style={{ ...s.card, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
               <div>
                 <div style={{ fontSize:14, fontWeight:600 }}>Report preview</div>
-                <div style={{ fontSize:11, color:'#9A9890', marginTop:2 }}>Compiles all uploaded data for the current cycle</div>
+                <div style={{ fontSize:11, color:'#9A9890', marginTop:2 }}>
+                  Will compile data for <strong>{uploadDate}</strong> as the daily snapshot
+                </div>
               </div>
               <button onClick={handleLoadReport} disabled={loadingReport} style={s.btnPrimary}>
                 {loadingReport ? 'Loading…' : 'Compile report'}
