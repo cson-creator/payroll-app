@@ -8,8 +8,9 @@ export async function POST(req: NextRequest) {
   const formData = await req.formData()
   const file = formData.get('file') as File
   const facilityId = formData.get('facilityId') as string
+  const uploadDate = formData.get('date') as string // yyyy-MM-dd, required — only rows matching this date are stored
 
-  if (!file || !facilityId) {
+  if (!file || !facilityId || !uploadDate) {
     return NextResponse.json({ error: 'Missing required fields' }, { status: 400 })
   }
 
@@ -37,8 +38,9 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Group hours by date + specialty (sum multiple shifts)
-  const grouped: Record<string, Record<string, number>> = {}
+  // Group hours by specialty — only rows matching uploadDate are accepted
+  const grouped: Record<string, number> = {}
+  let skippedRows = 0
 
   for (const row of rows) {
     const rawDate = row['Shift Date']
@@ -53,31 +55,35 @@ export async function POST(req: NextRequest) {
       if (rawDate instanceof Date) {
         dateStr = format(rawDate, 'yyyy-MM-dd')
       } else {
-        // Handle MM/DD/YYYY string format
         const parsed = parse(String(rawDate), 'MM/dd/yyyy', new Date())
         dateStr = format(parsed, 'yyyy-MM-dd')
       }
     } catch { continue }
 
+    // Only store rows for the operator-selected date — skip everything else
+    if (dateStr !== uploadDate) {
+      skippedRows++
+      continue
+    }
+
     // Map specialty to canonical name
     const specialty = SHIFTKEY_SPECIALTY_MAP[rawSpecialty] || rawSpecialty
-
-    if (!grouped[dateStr]) grouped[dateStr] = {}
-    grouped[dateStr][specialty] = (grouped[dateStr][specialty] || 0) + hours
+    grouped[specialty] = (grouped[specialty] || 0) + hours
   }
 
-  const upsertRows = Object.entries(grouped).flatMap(([date, specs]) =>
-    Object.entries(specs).map(([specialty, hours]) => ({
-      facility_id: facilityId,
-      date,
-      specialty,
-      hours,
-    }))
-  )
-
-  if (upsertRows.length === 0) {
-    return NextResponse.json({ error: 'No valid rows found in file' }, { status: 400 })
+  if (Object.keys(grouped).length === 0) {
+    const msg = skippedRows > 0
+      ? `No rows found for ${uploadDate}. The file contained ${skippedRows} row(s) for other dates. Check that your selected date matches the ShiftKey export.`
+      : 'No valid rows found in file.'
+    return NextResponse.json({ error: msg }, { status: 400 })
   }
+
+  const upsertRows = Object.entries(grouped).map(([specialty, hours]) => ({
+    facility_id: facilityId,
+    date: uploadDate,
+    specialty,
+    hours,
+  }))
 
   const { error } = await supabaseAdmin
     .from('daily_shiftkey')
@@ -85,5 +91,6 @@ export async function POST(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
 
-  return NextResponse.json({ success: true, rowsIngested: upsertRows.length })
+  const skippedNote = skippedRows > 0 ? ` (${skippedRows} rows from other dates ignored)` : ''
+  return NextResponse.json({ success: true, rowsIngested: upsertRows.length, note: skippedNote })
 }
