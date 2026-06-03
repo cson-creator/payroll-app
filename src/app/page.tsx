@@ -1,15 +1,23 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
-import { getCycleForDate, shortDate } from '@/lib/cycle'
+import { getCycleForDate, getCycleDates, shortDate, dowLabel } from '@/lib/cycle'
 import { ReportPreview } from '@/components/ReportPreview'
 import { UploadZone } from '@/components/UploadZone'
 import { ReportData } from '@/types'
-import { format, addDays } from 'date-fns'
+import { format, addDays, parseISO } from 'date-fns'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 
 type UploadStatus = 'idle' | 'uploading' | 'success' | 'error'
+
+interface CycleDay {
+  date: string
+  dow: string
+  census: number | null
+  empeonDepts: number  // count of distinct dept rows
+  shiftkeyRows: number // count of distinct specialty rows
+}
 
 export default function Home() {
   const [facilities, setFacilities] = useState<any[]>([])
@@ -19,7 +27,6 @@ export default function Home() {
   const [authError, setAuthError] = useState('')
 
   const { cycleStart, cycleEnd, dayNum } = getCycleForDate()
-  // Default upload date = yesterday
   const yesterday = format(addDays(new Date(), -1), 'yyyy-MM-dd')
   const [uploadDate, setUploadDate] = useState(yesterday)
 
@@ -39,6 +46,14 @@ export default function Home() {
   const [sendingEmail, setSendingEmail] = useState(false)
   const [emailMsg, setEmailMsg] = useState('')
 
+  // Cycle history panel
+  const [showHistory, setShowHistory] = useState(false)
+  const [historyDays, setHistoryDays] = useState<CycleDay[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [editingCensus, setEditingCensus] = useState<string | null>(null) // date being edited
+  const [editingCensusVal, setEditingCensusVal] = useState<string>('')
+  const [clearingDay, setClearingDay] = useState<string | null>(null)
+
   const reportRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -47,13 +62,20 @@ export default function Home() {
     })
   }, [])
 
-  // Pre-load census from DB when date changes
+  // Pre-load census from DB when date or facility changes
   useEffect(() => {
     if (!selectedFacility || !authed || !censusDate) return
-    supabase.from('daily_census').select('census').eq('facility_id', selectedFacility.id).eq('date', censusDate).single().then(({ data }) => {
-      if (data) setCensus(String(data.census))
-      else setCensus('')
-    })
+    setCensus('')
+    setCensusSaved(false)
+    supabase
+      .from('daily_census')
+      .select('census')
+      .eq('facility_id', selectedFacility.id)
+      .eq('date', censusDate)
+      .single()
+      .then(({ data }) => {
+        if (data) setCensus(String(data.census))
+      })
   }, [selectedFacility, authed, censusDate])
 
   function handleSelectFacility(fac: any) {
@@ -62,6 +84,8 @@ export default function Home() {
     setPasscode('')
     setAuthError('')
     setReportData(null)
+    setShowHistory(false)
+    setHistoryDays([])
   }
 
   function handleAuth() {
@@ -76,10 +100,7 @@ export default function Home() {
   function handleDateChange(date: string) {
     setUploadDate(date)
     setCensusDate(date)
-    // Clear census display so it reloads for the new date
-    setCensus('')
     setCensusSaved(false)
-    // Clear any existing report so it doesn't show stale data for the old date
     setReportData(null)
   }
 
@@ -105,7 +126,7 @@ export default function Home() {
     fd.append('date', uploadDate)
     const res = await fetch('/api/upload-shiftkey', { method: 'POST', body: fd })
     const json = await res.json()
-    if (res.ok) { setShiftkeyStatus('success'); setShiftkeyMsg(`✓ ${json.rowsIngested} agency rows ingested`) }
+    if (res.ok) { setShiftkeyStatus('success'); setShiftkeyMsg(`✓ ${json.rowsIngested} agency rows ingested${json.note || ''}`) }
     else { setShiftkeyStatus('error'); setShiftkeyMsg(json.error || 'Upload failed') }
   }
 
@@ -120,7 +141,6 @@ export default function Home() {
 
   async function handleLoadReport() {
     setLoadingReport(true)
-    // Pass the operator-selected date so the report focuses on that day
     const res = await fetch(`/api/report-data?facilityId=${selectedFacility.id}&reportDate=${uploadDate}`)
     const data = await res.json()
     setReportData(data)
@@ -128,12 +148,46 @@ export default function Home() {
     setLoadingReport(false)
   }
 
+  // ── PDF generation — two pages ──────────────────────
   async function generatePDF(): Promise<string> {
     const el = reportRef.current!
+
+    // Find the page break marker to know where to split
+    const marker = el.querySelector('#page-break-marker') as HTMLElement | null
+    const elRect = el.getBoundingClientRect()
+    const markerRect = marker?.getBoundingClientRect()
+
+    // Render the full report to canvas at 2x scale
     const canvas = await html2canvas(el, { scale: 2, useCORS: true, logging: false })
-    const imgData = canvas.toDataURL('image/png')
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: [canvas.width / 2, canvas.height / 2] })
-    pdf.addImage(imgData, 'PNG', 0, 0, canvas.width / 2, canvas.height / 2)
+
+    const scale = 2
+    const splitY = marker && markerRect
+      ? Math.round((markerRect.top - elRect.top) * scale)
+      : Math.round(canvas.height * 0.55) // fallback: ~55% down
+
+    // Page 1: everything above the page break marker
+    const p1Height = splitY
+    const p1Canvas = document.createElement('canvas')
+    p1Canvas.width = canvas.width
+    p1Canvas.height = p1Height
+    p1Canvas.getContext('2d')!.drawImage(canvas, 0, 0, canvas.width, p1Height, 0, 0, canvas.width, p1Height)
+
+    // Page 2: everything from the marker down
+    const p2Height = canvas.height - splitY
+    const p2Canvas = document.createElement('canvas')
+    p2Canvas.width = canvas.width
+    p2Canvas.height = p2Height
+    p2Canvas.getContext('2d')!.drawImage(canvas, 0, splitY, canvas.width, p2Height, 0, 0, canvas.width, p2Height)
+
+    const pxW = canvas.width / scale   // logical width in CSS px
+    const p1LogH = p1Height / scale
+    const p2LogH = p2Height / scale
+
+    const pdf = new jsPDF({ orientation: 'portrait', unit: 'px', format: [pxW, p1LogH] })
+    pdf.addImage(p1Canvas.toDataURL('image/png'), 'PNG', 0, 0, pxW, p1LogH)
+    pdf.addPage([pxW, p2LogH], 'portrait')
+    pdf.addImage(p2Canvas.toDataURL('image/png'), 'PNG', 0, 0, pxW, p2LogH)
+
     return pdf.output('datauristring').split(',')[1]
   }
 
@@ -162,6 +216,66 @@ export default function Home() {
     setSendingEmail(false)
   }
 
+  // ── Cycle history ────────────────────────────────────
+  async function loadHistory() {
+    if (!selectedFacility) return
+    setHistoryLoading(true)
+
+    const cycleStartStr = format(cycleStart, 'yyyy-MM-dd')
+    const cycleEndStr = format(cycleEnd, 'yyyy-MM-dd')
+    const dates = getCycleDates(cycleStart)
+
+    const [{ data: censusRows }, { data: empeonRows }, { data: skRows }] = await Promise.all([
+      supabase.from('daily_census').select('date,census').eq('facility_id', selectedFacility.id).gte('date', cycleStartStr).lte('date', cycleEndStr),
+      supabase.from('daily_empeon').select('date,cc2_name').eq('facility_id', selectedFacility.id).gte('date', cycleStartStr).lte('date', cycleEndStr),
+      supabase.from('daily_shiftkey').select('date,specialty').eq('facility_id', selectedFacility.id).gte('date', cycleStartStr).lte('date', cycleEndStr),
+    ])
+
+    const censusMap: Record<string, number> = {}
+    for (const r of censusRows || []) censusMap[r.date] = r.census
+
+    const empeonCount: Record<string, number> = {}
+    for (const r of empeonRows || []) empeonCount[r.date] = (empeonCount[r.date] || 0) + 1
+
+    const skCount: Record<string, number> = {}
+    for (const r of skRows || []) skCount[r.date] = (skCount[r.date] || 0) + 1
+
+    const days: CycleDay[] = dates.map(date => ({
+      date,
+      dow: dowLabel(date),
+      census: censusMap[date] ?? null,
+      empeonDepts: empeonCount[date] || 0,
+      shiftkeyRows: skCount[date] || 0,
+    }))
+
+    setHistoryDays(days)
+    setHistoryLoading(false)
+  }
+
+  async function handleSaveHistoryCensus(date: string) {
+    const val = parseInt(editingCensusVal)
+    if (isNaN(val) || val < 1) return
+    await fetch('/api/save-census', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ facilityId: selectedFacility.id, date, census: val }),
+    })
+    setEditingCensus(null)
+    setEditingCensusVal('')
+    loadHistory()
+  }
+
+  async function handleClearDay(date: string, clearCensus: boolean) {
+    setClearingDay(date)
+    await fetch('/api/clear-day', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ facilityId: selectedFacility.id, date, clearCensus }),
+    })
+    setClearingDay(null)
+    loadHistory()
+  }
+
   // ── Styles ──────────────────────────────────────────
   const s = {
     wrap: { minHeight:'100vh', background:'#F1EFE8', padding:'32px 24px', fontFamily:"'IBM Plex Sans',sans-serif" } as React.CSSProperties,
@@ -170,6 +284,7 @@ export default function Home() {
     input: { width:'100%', border:'0.5px solid #C8C6BE', borderRadius:4, padding:'8px 10px', fontSize:13, fontFamily:"'IBM Plex Sans',sans-serif", outline:'none' } as React.CSSProperties,
     btn: (color='#185FA5', bg='#E6F1FB') => ({ padding:'9px 18px', border:'none', borderRadius:4, fontSize:13, fontWeight:600, color, background:bg, cursor:'pointer', fontFamily:"'IBM Plex Sans',sans-serif" }) as React.CSSProperties,
     btnPrimary: { padding:'10px 22px', border:'none', borderRadius:4, fontSize:13, fontWeight:600, color:'#fff', background:'#185FA5', cursor:'pointer', fontFamily:"'IBM Plex Sans',sans-serif" } as React.CSSProperties,
+    btnSmall: (color='#185FA5', bg='#E6F1FB') => ({ padding:'5px 12px', border:'none', borderRadius:4, fontSize:12, fontWeight:600, color, background:bg, cursor:'pointer', fontFamily:"'IBM Plex Sans',sans-serif" }) as React.CSSProperties,
   }
 
   return (
@@ -211,9 +326,9 @@ export default function Home() {
           </div>
         )}
 
-        {/* Upload + census panel */}
         {selectedFacility && authed && (
           <>
+            {/* Upload card */}
             <div style={s.card}>
               <div style={{ fontSize:14, fontWeight:600, marginBottom:16 }}>Upload data</div>
               <div style={{ marginBottom:12 }}>
@@ -230,12 +345,117 @@ export default function Home() {
                   <input type="number" value={census} onChange={e => { setCensus(e.target.value); setCensusSaved(false) }} style={{ ...s.input, width:120 }} placeholder="e.g. 66" />
                 </div>
                 <div style={{ display:'flex', flexDirection:'column', gap:4 }}>
-                  <button onClick={handleSaveCensus} style={{ ...s.btn('#3B6D11','#EAF3DE') }}>
+                  <button onClick={handleSaveCensus} style={s.btn('#3B6D11','#EAF3DE')}>
                     {censusSaved ? '✓ Saved' : 'Save census'}
                   </button>
                   <div style={{ fontSize:10, color:'#9A9890', textAlign:'center' }}>Required for PPD</div>
                 </div>
               </div>
+            </div>
+
+            {/* Cycle history panel */}
+            <div style={s.card}>
+              <button
+                onClick={() => { setShowHistory(h => !h); if (!showHistory) loadHistory() }}
+                style={{ background:'none', border:'none', cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center', width:'100%', padding:0, fontFamily:"'IBM Plex Sans',sans-serif" }}
+              >
+                <div style={{ fontSize:14, fontWeight:600 }}>Cycle history</div>
+                <div style={{ fontSize:12, color:'#9A9890' }}>{showHistory ? '▲ Hide' : '▼ View & edit'}</div>
+              </button>
+
+              {showHistory && (
+                <div style={{ marginTop:16 }}>
+                  {historyLoading ? (
+                    <div style={{ fontSize:13, color:'#9A9890' }}>Loading…</div>
+                  ) : (
+                    <table style={{ width:'100%', borderCollapse:'collapse', fontSize:13 }}>
+                      <thead>
+                        <tr>
+                          {['Day', 'Date', 'Census', 'Empeon', 'ShiftKey', 'Actions'].map((h, i) => (
+                            <th key={i} style={{ fontSize:10, fontWeight:600, letterSpacing:'0.06em', textTransform:'uppercase', color:'#9A9890', background:'#F1EFE8', padding:'7px 10px', textAlign: i===0||i===1?'left':'center', borderBottom:'0.5px solid #E0DED6', whiteSpace:'nowrap' }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {historyDays.map((day, i) => {
+                          const isToday = day.date === format(new Date(), 'yyyy-MM-dd')
+                          const hasAnyData = day.census !== null || day.empeonDepts > 0 || day.shiftkeyRows > 0
+                          const isFuture = day.date > format(new Date(), 'yyyy-MM-dd')
+                          const isEditing = editingCensus === day.date
+                          const isClearing = clearingDay === day.date
+                          return (
+                            <tr key={day.date} style={{ background: isToday ? '#F0F7FF' : 'transparent', opacity: isFuture ? 0.4 : 1 }}>
+                              <td style={{ padding:'7px 10px', borderBottom:'0.5px solid #E0DED6', fontWeight: isToday?600:400, color:'#9A9890', fontSize:11 }}>
+                                {day.dow} {i+1}
+                              </td>
+                              <td style={{ padding:'7px 10px', borderBottom:'0.5px solid #E0DED6', fontWeight: isToday?600:400 }}>
+                                {shortDate(day.date)}
+                              </td>
+                              <td style={{ padding:'7px 10px', borderBottom:'0.5px solid #E0DED6', textAlign:'center' }}>
+                                {isEditing ? (
+                                  <div style={{ display:'flex', gap:4, justifyContent:'center', alignItems:'center' }}>
+                                    <input
+                                      type="number"
+                                      value={editingCensusVal}
+                                      onChange={e => setEditingCensusVal(e.target.value)}
+                                      onKeyDown={e => { if (e.key==='Enter') handleSaveHistoryCensus(day.date); if (e.key==='Escape') { setEditingCensus(null); setEditingCensusVal('') } }}
+                                      style={{ width:60, border:'0.5px solid #378ADD', borderRadius:4, padding:'3px 6px', fontSize:12, textAlign:'center', fontFamily:"'IBM Plex Sans',sans-serif", outline:'none' }}
+                                      autoFocus
+                                    />
+                                    <button onClick={() => handleSaveHistoryCensus(day.date)} style={s.btnSmall('#3B6D11','#EAF3DE')}>✓</button>
+                                    <button onClick={() => { setEditingCensus(null); setEditingCensusVal('') }} style={s.btnSmall('#5F5E5A','#F1EFE8')}>✕</button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => { if (!isFuture) { setEditingCensus(day.date); setEditingCensusVal(day.census !== null ? String(day.census) : '') } }}
+                                    style={{ background:'none', border:'none', cursor: isFuture?'default':'pointer', fontSize:13, fontFamily:"'IBM Plex Sans',sans-serif", color: day.census !== null ? '#1A1A18' : '#C8C6BE', padding:'2px 6px', borderRadius:3, textDecoration: !isFuture&&day.census!==null ? 'underline dotted #C8C6BE' : 'none' }}
+                                    title={isFuture ? '' : 'Click to edit'}
+                                  >
+                                    {day.census !== null ? day.census : '—'}
+                                  </button>
+                                )}
+                              </td>
+                              <td style={{ padding:'7px 10px', borderBottom:'0.5px solid #E0DED6', textAlign:'center', color: day.empeonDepts > 0 ? '#3B6D11' : '#C8C6BE' }}>
+                                {day.empeonDepts > 0 ? `${day.empeonDepts} depts` : '—'}
+                              </td>
+                              <td style={{ padding:'7px 10px', borderBottom:'0.5px solid #E0DED6', textAlign:'center', color: day.shiftkeyRows > 0 ? '#854F0B' : '#C8C6BE' }}>
+                                {day.shiftkeyRows > 0 ? `${day.shiftkeyRows} rows` : '—'}
+                              </td>
+                              <td style={{ padding:'7px 10px', borderBottom:'0.5px solid #E0DED6', textAlign:'center' }}>
+                                {!isFuture && hasAnyData && (
+                                  <div style={{ display:'flex', gap:4, justifyContent:'center' }}>
+                                    {(day.empeonDepts > 0 || day.shiftkeyRows > 0) && (
+                                      <button
+                                        onClick={() => { if (confirm(`Clear Empeon + ShiftKey data for ${shortDate(day.date)}? Census will be kept.`)) handleClearDay(day.date, false) }}
+                                        disabled={isClearing}
+                                        style={s.btnSmall('#854F0B','#FEF3E2')}
+                                        title="Remove uploaded hours data, keep census"
+                                      >
+                                        {isClearing ? '…' : 'Clear uploads'}
+                                      </button>
+                                    )}
+                                    <button
+                                      onClick={() => { if (confirm(`Clear ALL data for ${shortDate(day.date)} including census?`)) handleClearDay(day.date, true) }}
+                                      disabled={isClearing}
+                                      style={s.btnSmall('#A32D2D','#FDE8E8')}
+                                      title="Remove all data for this day"
+                                    >
+                                      {isClearing ? '…' : 'Clear all'}
+                                    </button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                  <div style={{ marginTop:12, fontSize:11, color:'#9A9890' }}>
+                    Click a census value to edit it. "Clear uploads" removes Empeon + ShiftKey hours but keeps the census. "Clear all" removes everything including census. After clearing, re-upload the corrected files.
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Generate report */}
