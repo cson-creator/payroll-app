@@ -93,6 +93,7 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
     return d.census ? parseFloat((c.rnlvncmacna / d.census).toFixed(2)) : null
   })
   const cycleAvgPPD = allNursingPPD.filter(Boolean).reduce((s, v, _, a) => s! + v! / a.length, 0) || 0
+  const chartMax = Math.ceil(Math.max(4, ...allNursingPPD.filter(Boolean) as number[], ...combPPD.filter(Boolean) as number[]) + 0.5)
   const chartLabels = trendDays.map(d => shortDate(d.date))
 
   // Ancillary departments (non-nursing, non-agency)
@@ -220,7 +221,7 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
                 { label: 'Cycle avg', data: chartLabels.map(() => cycleAvgPPD), borderColor: '#EF9F27', backgroundColor: 'transparent', tension: 0, pointRadius: 0, borderWidth: 1, borderDash: [8,5] },
               ]
             }}
-            options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { font: { size: 11 } } }, y: { min: 0, max: 4, ticks: { stepSize: 0.5, font: { size: 11 } } } } }}
+            options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { font: { size: 11 } } }, y: { min: 0, max: chartMax, ticks: { font: { size: 11 } } } } }}
           />
         </div>
         <div style={{ display:'flex', gap:18, marginTop:10 }}>
