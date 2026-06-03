@@ -196,7 +196,7 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
       )}
 
       {/* Page break visual */}
-      <div style={{ display:'flex', alignItems:'center', gap:12, margin:'36px 0 28px', color:'#9A9890', fontSize:10, letterSpacing:'0.1em', textTransform:'uppercase' }}>
+      <div id="page-break-marker" style={{ display:'flex', alignItems:'center', gap:12, margin:'36px 0 28px', color:'#9A9890', fontSize:10, letterSpacing:'0.1em', textTransform:'uppercase' }}>
         <div style={{ flex:1, height:0.5, background:'#C8C6BE' }} />
         Page 2 — PPD trend
         <div style={{ flex:1, height:0.5, background:'#C8C6BE' }} />
