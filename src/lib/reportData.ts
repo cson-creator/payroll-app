@@ -1,11 +1,12 @@
 import { supabase } from './supabase'
-import { getCycleForDate, getCycleDates, dowLabel, shortDate } from './cycle'
-import { NURSING_ALL } from './departments'
+import { getCycleForDate, getCycleDates, dowLabel } from './cycle'
 import { ReportData, ReportDay } from '@/types'
-import { parseISO, format } from 'date-fns'
+import { format, parseISO } from 'date-fns'
 
-export async function buildReportData(facilityId: string): Promise<ReportData> {
-  const { cycleStart, cycleEnd, dayNum } = getCycleForDate(new Date())
+export async function buildReportData(facilityId: string, reportDate: string): Promise<ReportData> {
+  // Use the operator-selected date, not the server clock
+  const parsedDate = parseISO(reportDate)
+  const { cycleStart, cycleEnd, dayNum } = getCycleForDate(parsedDate)
   const dates = getCycleDates(cycleStart)
 
   const cycleStartStr = format(cycleStart, 'yyyy-MM-dd')
