@@ -9,6 +9,8 @@ export const ALL_DEPARTMENTS: { cc1_group: string; cc2_name: string }[] = [
   { cc1_group: 'Nursing', cc2_name: 'Wound Nurse' },
   { cc1_group: 'Nursing', cc2_name: 'Corporate Nurse' },
   { cc1_group: 'Nursing', cc2_name: 'Staffing Coordinator CNA' },
+  { cc1_group: 'Nursing', cc2_name: 'Staffing Coordinator LVN' },
+  { cc1_group: 'Nursing', cc2_name: 'Infection Control' },
   { cc1_group: 'Nursing', cc2_name: 'RN' },
   { cc1_group: 'Nursing', cc2_name: 'LVN' },
   { cc1_group: 'Nursing', cc2_name: 'CMT' },
@@ -25,6 +27,7 @@ export const ALL_DEPARTMENTS: { cc1_group: string; cc2_name: string }[] = [
   { cc1_group: 'Dietary', cc2_name: 'Cook' },
   { cc1_group: 'Dietary', cc2_name: 'Dietary Aide' },
   { cc1_group: 'Dietary', cc2_name: 'Dietary' },
+  { cc1_group: 'Dietary', cc2_name: 'Assistant Dietary Manager' },
   // Housekeeping/Laundry
   { cc1_group: 'Housekeeping/Laundry', cc2_name: 'Housekeeping/Laundry Director' },
   { cc1_group: 'Housekeeping/Laundry', cc2_name: 'Housekeeping' },
@@ -41,6 +44,8 @@ export const ALL_DEPARTMENTS: { cc1_group: string; cc2_name: string }[] = [
   { cc1_group: 'Administration', cc2_name: 'Business Office' },
   { cc1_group: 'Administration', cc2_name: 'Purchasing' },
   { cc1_group: 'Administration', cc2_name: 'Human Resources' },
+  { cc1_group: 'Administration', cc2_name: 'Receptionist' },
+  { cc1_group: 'Administration', cc2_name: 'Transportation' },
   // Activities
   { cc1_group: 'Activities', cc2_name: 'Activity Director' },
   { cc1_group: 'Activities', cc2_name: 'Activities' },
@@ -48,11 +53,14 @@ export const ALL_DEPARTMENTS: { cc1_group: string; cc2_name: string }[] = [
   { cc1_group: 'Social Service', cc2_name: 'Social Services' },
 ]
 
-// Which Cc2 names are considered "nursing" for PPD calculation
+// Which cc2 names count as nursing for PPD calculation
 export const NURSING_LICENSED = ['RN', 'LVN']
 export const NURSING_MEDAIDES = ['CMT']
 export const NURSING_AIDES = ['CNA']
-export const NURSING_ADMIN = ['DON', 'ADON', 'MDS', 'Wound Nurse', 'Corporate Nurse', 'Staffing Coordinator CNA']
+export const NURSING_ADMIN = [
+  'DON', 'ADON', 'MDS', 'Wound Nurse', 'Corporate Nurse',
+  'Staffing Coordinator CNA', 'Staffing Coordinator LVN', 'Infection Control',
+]
 export const NURSING_ALL = [...NURSING_LICENSED, ...NURSING_MEDAIDES, ...NURSING_AIDES, ...NURSING_ADMIN]
 
 // ShiftKey specialty → cc2_name mapping
