@@ -2,7 +2,6 @@
 import { ReportData } from '@/types'
 import { NURSING_LICENSED, NURSING_MEDAIDES, NURSING_AIDES, NURSING_ADMIN, SHIFTKEY_SPECIALTY_MAP } from '@/lib/departments'
 import { shortDate } from '@/lib/cycle'
-import { useEffect, useRef } from 'react'
 import { Line } from 'react-chartjs-2'
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement,
@@ -23,7 +22,6 @@ function computeDay(day: ReportData['days'][0], census: number | null) {
   const emp = day.empeon
   const sk = day.shiftkey
 
-  // Map shiftkey specialties to canonical names
   const skCanon: Record<string, number> = {}
   for (const [spec, hrs] of Object.entries(sk)) {
     const canon = SHIFTKEY_SPECIALTY_MAP[spec] || spec
@@ -74,13 +72,10 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
   const computed = today ? computeDay(today, census) : null
   const cycleAvgCensus = data.days.filter(d => d.census).reduce((s, d, _, a) => s + (d.census || 0) / a.length, 0)
 
-  // Cycle-level totals for KPIs
   const cycleAgency = data.days.reduce((sum, d) => {
     const skVals = Object.values(d.shiftkey).reduce((a, b) => a + b, 0)
     return sum + skVals
   }, 0)
-
-  const completedDays = data.days.filter(d => d.census !== null)
 
   // PPD trend data — divide hours by census to get actual PPD values
   const trendDays = data.days.slice(0, data.currentDay)
@@ -93,10 +88,9 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
     return d.census ? parseFloat((c.rnlvncmacna / d.census).toFixed(2)) : null
   })
   const cycleAvgPPD = allNursingPPD.filter(Boolean).reduce((s, v, _, a) => s! + v! / a.length, 0) || 0
-  const chartMax = Math.ceil(Math.max(4, ...allNursingPPD.filter(Boolean) as number[], ...combPPD.filter(Boolean) as number[]) + 0.5)
   const chartLabels = trendDays.map(d => shortDate(d.date))
+  const chartMax = Math.ceil(Math.max(4, ...allNursingPPD.filter(Boolean) as number[], ...combPPD.filter(Boolean) as number[]) + 0.5)
 
-  // Ancillary departments (non-nursing, non-agency)
   const ANCILLARY_GROUPS = ['Housekeeping/Laundry', 'Dietary', 'Maintenance', 'Rehab', 'Activities', 'Social Service', 'Administration']
 
   function getAncillaryRows(day: ReportData['days'][0]) {
@@ -115,6 +109,18 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
       }
     }
     return rows
+  }
+
+  // Individual nursing admin rows — only positions that have hours today
+  function getAdminRows(day: ReportData['days'][0]) {
+    return NURSING_ADMIN
+      .filter(name => (day.empeon[name]?.reg || 0) + (day.empeon[name]?.ot || 0) > 0)
+      .map(name => ({
+        name,
+        reg: day.empeon[name]?.reg || 0,
+        ot: day.empeon[name]?.ot || 0,
+        total: (day.empeon[name]?.reg || 0) + (day.empeon[name]?.ot || 0),
+      }))
   }
 
   return (
@@ -147,7 +153,7 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
       </div>
 
       {/* Nursing table */}
-      {computed && census && (
+      {computed && census && today && (
         <>
           <SectionLabel>Nursing — daily detail</SectionLabel>
           <TableWrap>
@@ -156,24 +162,26 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
                 <THead cols={['Department', 'Reg hrs', 'OT hrs', 'Agency hrs', 'Total hrs', 'PPD']} />
               </thead>
               <tbody>
-                <GroupRow label="Licensed nursing" />
-                <TR cells={['RN', fh(computed.rnHrs - (today.empeon['RN']?.ot||0)), f2(today.empeon['RN']?.ot||0), '—', fh(computed.rnHrs), <PPDCell v={computed.ppd(computed.rnHrs)} />]} />
-                <TR cells={['LVN', fh((today.empeon['LVN']?.reg||0)), f2(today.empeon['LVN']?.ot||0), '—', fh(computed.lvnHrs), <PPDCell v={computed.ppd(computed.lvnHrs)} />]} />
+                {/* Licensed nursing — no sub-header */}
+                <TR cells={['RN', fh(today.empeon['RN']?.reg||0), f2(today.empeon['RN']?.ot||0), '—', fh(computed.rnHrs), <PPDCell v={computed.ppd(computed.rnHrs)} />]} />
+                <TR cells={['LVN', fh(today.empeon['LVN']?.reg||0), f2(today.empeon['LVN']?.ot||0), '—', fh(computed.lvnHrs), <PPDCell v={computed.ppd(computed.lvnHrs)} />]} />
                 <AgencyRow label="RN / LVN agency" hrs={computed.rnlvnAg} ppd={computed.ppd(computed.rnlvnAg)} />
                 <SubRow cells={['RN / LVN combined', fh(computed.rnHrs+computed.lvnHrs), '—', fh(computed.rnlvnAg), fh(computed.rnlvnTotal), <PPDCell v={computed.ppd(computed.rnlvnTotal)} bold />]} />
 
-                <GroupRow label="Medication aides" />
+                {/* Medication aides — no sub-header */}
                 <TR cells={['CMA', fh(today.empeon['CMT']?.reg||0), f2(today.empeon['CMT']?.ot||0), '—', fh(computed.cmaHrs), <PPDCell v={computed.ppd(computed.cmaHrs)} />]} />
                 <AgencyRow label="CMA agency" hrs={computed.cmaAg} ppd={computed.ppd(computed.cmaAg)} />
                 <SubRow cells={['RN / LVN / CMA', fh(computed.rnHrs+computed.lvnHrs+computed.cmaHrs), '—', fh(computed.rnlvnAg+computed.cmaAg), fh(computed.rnlvncma), <PPDCell v={computed.ppd(computed.rnlvncma)} bold />]} />
 
-                <GroupRow label="Aides" />
+                {/* Aides — no sub-header */}
                 <TR cells={['CNA', fh(today.empeon['CNA']?.reg||0), f2(today.empeon['CNA']?.ot||0), '—', fh(computed.cnaHrs), <PPDCell v={computed.ppd(computed.cnaHrs)} />]} />
                 <AgencyRow label="CNA agency" hrs={computed.cnaAg} ppd={computed.ppd(computed.cnaAg)} />
                 <SubRow cells={['RN / LVN / CMA / CNA', fh(computed.rnHrs+computed.lvnHrs+computed.cmaHrs+computed.cnaHrs), '—', fh(computed.cnaAg+computed.rnlvnAg+computed.cmaAg), fh(computed.rnlvncmacna), <PPDCell v={computed.ppd(computed.rnlvncmacna)} bold />]} />
 
-                <GroupRow label="Nursing administration" />
-                <TR cells={['Nursing admin (combined)', fh(computed.adminHrs), '—', '—', fh(computed.adminHrs), <PPDCell v={computed.ppd(computed.adminHrs)} />]} />
+                {/* Nursing admin — individual rows, only positions with hours */}
+                {getAdminRows(today).map(row => (
+                  <TR key={row.name} cells={[row.name, fh(row.reg), f2(row.ot), '—', fh(row.total), <PPDCell v={computed.ppd(row.total)} />]} />
+                ))}
 
                 <TotalRow cells={['All nursing', '', '', '', fh(computed.allNursing), <span style={{ fontSize:15, color: ppdColor(computed.ppd(computed.allNursing)), fontWeight:600 }}>{computed.ppd(computed.allNursing).toFixed(2)}</span>]} />
               </tbody>
@@ -284,10 +292,6 @@ function TR({ cells }: { cells: any[] }) {
   )
 }
 
-function GroupRow({ label }: { label: string }) {
-  return <tr><td colSpan={6} style={{ fontSize:10, fontWeight:600, letterSpacing:'0.07em', textTransform:'uppercase', color:'#9A9890', background:'#F1EFE8', padding:'6px 12px 4px', borderBottom:'0.5px solid #E0DED6' }}>{label}</td></tr>
-}
-
 function SubRow({ cells }: { cells: any[] }) {
   return (
     <tr style={{ background:'#F5F4F0' }}>
@@ -338,18 +342,16 @@ function LegLine({ color, label, dash }: { color: string; label: string; dash?: 
 function TrendGrid({ data, ppdColor, cycleAvgPPD }: { data: ReportData; ppdColor: (v:number)=>string; cycleAvgPPD: number }) {
   const trendRows = [
     { key: 'census', label: 'Census', isCensus: true },
-    { type: 'group', label: 'Licensed nursing' },
     { key: 'rn', label: 'RN' },
     { key: 'lvn', label: 'LVN' },
     { key: 'rnlvnAg', label: 'RN/LVN agency', isAgency: true },
     { key: 'rnlvn', label: 'RN/LVN combined', isSub: true },
-    { type: 'group', label: 'Medication aides' },
     { key: 'cma', label: 'CMA' },
     { key: 'cmaAg', label: 'CMA agency', isAgency: true },
     { key: 'rnlvncma', label: 'RN/LVN/CMA', isSub: true },
-    { type: 'group', label: 'Aides' },
     { key: 'cna', label: 'CNA' },
     { key: 'cnaAg', label: 'CNA agency', isAgency: true },
+    { key: 'rnlvncmacna', label: 'RN/LVN/CMA/CNA', isSub: true },
     { key: 'nursingAdm', label: 'Nursing admin' },
     { key: 'allNursing', label: 'All nursing PPD', isTotal: true },
   ]
@@ -365,6 +367,7 @@ function TrendGrid({ data, ppdColor, cycleAvgPPD }: { data: ReportData; ppdColor
       rn: ppd(c.rnHrs), lvn: ppd(c.lvnHrs), rnlvnAg: ppd(c.rnlvnAg),
       rnlvn: ppd(c.rnlvnTotal), cma: ppd(c.cmaHrs), cmaAg: ppd(c.cmaAg),
       rnlvncma: ppd(c.rnlvncma), cna: ppd(c.cnaHrs), cnaAg: ppd(c.cnaAg),
+      rnlvncmacna: ppd(c.rnlvncmacna),
       nursingAdm: ppd(c.adminHrs), allNursing: ppd(c.allNursing),
     }
     return m[key] ?? null
@@ -394,9 +397,6 @@ function TrendGrid({ data, ppdColor, cycleAvgPPD }: { data: ReportData; ppdColor
         </thead>
         <tbody>
           {trendRows.map((row, ri) => {
-            if (row.type === 'group') {
-              return <tr key={ri}><td colSpan={16} style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', letterSpacing:'0.07em', color:'#9A9890', background:'#F1EFE8', padding:'5px 12px 3px', borderBottom:'0.5px solid #E0DED6' }}>{row.label}</td></tr>
-            }
             const vals = data.days.map((_, i) => getVal(row.key!, dayComputations[i]))
             const completedVals = vals.filter(v => v !== null) as number[]
             const avg = completedVals.length ? completedVals.reduce((a,b)=>a+b,0)/completedVals.length : null
@@ -435,14 +435,22 @@ function TrendGrid({ data, ppdColor, cycleAvgPPD }: { data: ReportData; ppdColor
 // Helper: get cc1_group for a cc2_name
 function getGroup(name: string): string | null {
   const map: Record<string, string> = {
-    'DON':'Nursing','ADON':'Nursing','MDS':'Nursing','Wound Nurse':'Nursing','Corporate Nurse':'Nursing','Staffing Coordinator CNA':'Nursing',
+    'DON':'Nursing','ADON':'Nursing','MDS':'Nursing','Wound Nurse':'Nursing',
+    'Corporate Nurse':'Nursing','Staffing Coordinator CNA':'Nursing',
+    'Staffing Coordinator LVN':'Nursing','Infection Control':'Nursing',
     'RN':'Nursing','LVN':'Nursing','CMT':'Nursing','CNA':'Nursing',
-    'Rehab Director':'Rehab','Physical Therapist':'Rehab','PTA':'Rehab','Occupational Therapist':'Rehab','COTA':'Rehab','Speech Therapist':'Rehab',
-    'Food Service Director':'Dietary','Cook':'Dietary','Dietary Aide':'Dietary','Dietary':'Dietary',
-    'Housekeeping/Laundry Director':'Housekeeping/Laundry','Housekeeping':'Housekeeping/Laundry','Laundry':'Housekeeping/Laundry',
+    'Rehab Director':'Rehab','Physical Therapist':'Rehab','PTA':'Rehab',
+    'Occupational Therapist':'Rehab','COTA':'Rehab','Speech Therapist':'Rehab',
+    'Food Service Director':'Dietary','Cook':'Dietary','Dietary Aide':'Dietary',
+    'Dietary':'Dietary','Assistant Dietary Manager':'Dietary',
+    'Housekeeping/Laundry Director':'Housekeeping/Laundry',
+    'Housekeeping':'Housekeeping/Laundry','Laundry':'Housekeeping/Laundry',
     'Maintenance Director':'Maintenance','Maintenance':'Maintenance',
-    'Administrator':'Administration','Assistant Administrator':'Administration','Admissions':'Administration','Marketing':'Administration',
-    'Business Office Manager':'Administration','Business Office':'Administration','Purchasing':'Administration','Human Resources':'Administration',
+    'Administrator':'Administration','Assistant Administrator':'Administration',
+    'Admissions':'Administration','Marketing':'Administration',
+    'Business Office Manager':'Administration','Business Office':'Administration',
+    'Purchasing':'Administration','Human Resources':'Administration',
+    'Receptionist':'Administration','Transportation':'Administration',
     'Activity Director':'Activities','Activities':'Activities',
     'Social Services':'Social Service',
   }
