@@ -82,15 +82,15 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
 
   const completedDays = data.days.filter(d => d.census !== null)
 
-  // PPD trend data
+  // PPD trend data — divide hours by census to get actual PPD values
   const trendDays = data.days.slice(0, data.currentDay)
   const allNursingPPD = trendDays.map(d => {
     const c = computeDay(d, d.census)
-    return d.census ? parseFloat(c.allNursing.toFixed(2)) : null
+    return d.census ? parseFloat((c.allNursing / d.census).toFixed(2)) : null
   })
   const combPPD = trendDays.map(d => {
     const c = computeDay(d, d.census)
-    return d.census ? parseFloat(c.rnlvncmacna.toFixed(2)) : null
+    return d.census ? parseFloat((c.rnlvncmacna / d.census).toFixed(2)) : null
   })
   const cycleAvgPPD = allNursingPPD.filter(Boolean).reduce((s, v, _, a) => s! + v! / a.length, 0) || 0
   const chartLabels = trendDays.map(d => shortDate(d.date))
@@ -102,7 +102,6 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
     const rows: { group: string; reg: number; ot: number; total: number }[] = []
     const grouped: Record<string, { reg: number; ot: number }> = {}
     for (const [name, hrs] of Object.entries(day.empeon)) {
-      // Determine group from ALL_DEPARTMENTS (we inline a quick lookup here)
       const group = getGroup(name)
       if (!group || group === 'Nursing') continue
       if (!grouped[group]) grouped[group] = { reg: 0, ot: 0 }
@@ -170,7 +169,7 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
                 <GroupRow label="Aides" />
                 <TR cells={['CNA', fh(today.empeon['CNA']?.reg||0), f2(today.empeon['CNA']?.ot||0), '—', fh(computed.cnaHrs), <PPDCell v={computed.ppd(computed.cnaHrs)} />]} />
                 <AgencyRow label="CNA agency" hrs={computed.cnaAg} ppd={computed.ppd(computed.cnaAg)} />
-                <SubRow cells={['RN / LVN / CMA / CNA', '', '—', fh(computed.cnaAg+computed.rnlvnAg+computed.cmaAg), fh(computed.rnlvncmacna), <PPDCell v={computed.ppd(computed.rnlvncmacna)} bold />]} />
+                <SubRow cells={['RN / LVN / CMA / CNA', fh(computed.rnHrs+computed.lvnHrs+computed.cmaHrs+computed.cnaHrs), '—', fh(computed.cnaAg+computed.rnlvnAg+computed.cmaAg), fh(computed.rnlvncmacna), <PPDCell v={computed.ppd(computed.rnlvncmacna)} bold />]} />
 
                 <GroupRow label="Nursing administration" />
                 <TR cells={['Nursing admin (combined)', fh(computed.adminHrs), '—', '—', fh(computed.adminHrs), <PPDCell v={computed.ppd(computed.adminHrs)} />]} />
