@@ -113,7 +113,15 @@ export default function Home() {
     fd.append('date', uploadDate)
     const res = await fetch('/api/upload-empeon', { method: 'POST', body: fd })
     const json = await res.json()
-    if (res.ok) { setEmpeonStatus('success'); setEmpeonMsg(`✓ ${json.rowsIngested} departments ingested`) }
+    if (res.ok) {
+  const unknown = json.unknownPositions as string[]
+  const baseMsg = `✓ ${json.rowsIngested} departments ingested`
+  const warnMsg = unknown?.length > 0
+    ? ` · ⚠ ${unknown.length} unknown position(s) not in facility config: ${unknown.join(', ')}`
+    : ''
+  setEmpeonStatus(unknown?.length > 0 ? 'error' : 'success')
+  setEmpeonMsg(baseMsg + warnMsg)
+}
     else { setEmpeonStatus('error'); setEmpeonMsg(json.error || 'Upload failed') }
   }
 
