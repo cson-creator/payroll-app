@@ -1,22 +1,36 @@
 import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
 // Anchor: May 17, 2026 = known cycle start
-const ANCHOR = new Date('2026-05-17T12:00:00')
+// Use T12:00:00 (noon) to avoid UTC midnight timezone boundary issues
+const ANCHOR = parseISO('2026-05-17T12:00:00')
 
-export function getCycleForDate(date: Date = new Date()): {
+export function getCycleForDate(date?: Date | string): {
   cycleStart: Date
   cycleEnd: Date
-  dayNum: number  // 1-14
+  dayNum: number
 } {
-  const daysSinceAnchor = differenceInDays(date, ANCHOR)
-  // Handle dates before anchor
+  // Normalize input: string dates parsed as noon to avoid timezone shifts
+  let d: Date
+  if (!date) {
+    // Default: today at noon local time
+    const now = new Date()
+    d = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0)
+  } else if (typeof date === 'string') {
+    // yyyy-MM-dd string — treat as noon local time
+    const [y, m, day] = date.split('-').map(Number)
+    d = new Date(y, m - 1, day, 12, 0, 0)
+  } else {
+    d = date
+  }
+
+  const daysSinceAnchor = differenceInDays(d, ANCHOR)
   const cycleIndex = daysSinceAnchor >= 0
     ? Math.floor(daysSinceAnchor / 14)
     : Math.floor(daysSinceAnchor / 14) - 1
 
   const cycleStart = addDays(ANCHOR, cycleIndex * 14)
   const cycleEnd = addDays(cycleStart, 13)
-  const dayNum = differenceInDays(date, cycleStart) + 1
+  const dayNum = differenceInDays(d, cycleStart) + 1
 
   return { cycleStart, cycleEnd, dayNum }
 }
