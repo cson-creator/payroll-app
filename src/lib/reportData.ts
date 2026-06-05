@@ -1,12 +1,11 @@
 import { supabase } from './supabase'
 import { getCycleForDate, getCycleDates, dowLabel } from './cycle'
 import { ReportData, ReportDay } from '@/types'
-import { parseISO, format } from 'date-fns'
+import { format } from 'date-fns'
 
 export async function buildReportData(facilityId: string, reportDate: string): Promise<ReportData> {
-  // Use the operator-selected date, not the server clock
-  const parsedDate = parseISO(reportDate)
-  const { cycleStart, cycleEnd, dayNum } = getCycleForDate(parsedDate)
+  // getCycleForDate handles string dates safely as noon local time
+  const { cycleStart, cycleEnd, dayNum } = getCycleForDate(reportDate)
   const dates = getCycleDates(cycleStart)
 
   const cycleStartStr = format(cycleStart, 'yyyy-MM-dd')
@@ -18,21 +17,19 @@ export async function buildReportData(facilityId: string, reportDate: string): P
     supabase.from('facility_departments').select('cc2_name').eq('facility_id', facilityId).eq('included', true),
   ])
 
-  // Build a set of allowed cc2_names for this facility
-  // Any empeon row whose cc2_name is not in this set is excluded from the report
-  const allowedDepts = new Set((includedDepts || []).map(d => d.cc2_name))
+  const allowedDepts = new Set((includedDepts || []).map((d: any) => d.cc2_name))
 
-  // Fetch cycle data
+  // Fetch cycle data in parallel
   const [{ data: empeonRows }, { data: shiftkeyRows }, { data: censusRows }] = await Promise.all([
     supabase.from('daily_empeon').select('*').eq('facility_id', facilityId).gte('date', cycleStartStr).lte('date', cycleEndStr),
     supabase.from('daily_shiftkey').select('*').eq('facility_id', facilityId).gte('date', cycleStartStr).lte('date', cycleEndStr),
     supabase.from('daily_census').select('*').eq('facility_id', facilityId).gte('date', cycleStartStr).lte('date', cycleEndStr),
   ])
 
-  // Index empeon by date — only include departments toggled on in Admin
+  // Index empeon by date — only included departments
   const empeonByDate: Record<string, Record<string, { reg: number; ot: number }>> = {}
   for (const row of (empeonRows || [])) {
-    if (!allowedDepts.has(row.cc2_name)) continue  // excluded in Admin → skip entirely
+    if (!allowedDepts.has(row.cc2_name)) continue
     if (!empeonByDate[row.date]) empeonByDate[row.date] = {}
     empeonByDate[row.date][row.cc2_name] = {
       reg: Number(row.reg_hours),
