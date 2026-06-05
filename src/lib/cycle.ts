@@ -1,7 +1,7 @@
 import { addDays, differenceInDays, format, parseISO } from 'date-fns'
 
 // Anchor: May 17, 2026 = known cycle start
-const ANCHOR = new Date('2026-05-17')
+const ANCHOR = new Date('2026-05-17T12:00:00')
 
 export function getCycleForDate(date: Date = new Date()): {
   cycleStart: Date
