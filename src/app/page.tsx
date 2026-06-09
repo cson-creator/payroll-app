@@ -589,7 +589,7 @@ export default function Home() {
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <button onClick={handleSaveCensus} style={btnSecondary(C.green, C.greenLight)}>
-                  {censusSaved ? '✓ Saved' : 'Save census'}
+                  {censusSaved ? '✓ Saved' : 'Submit Data'}
                 </button>
                 <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center' }}>Required for PPD</div>
               </div>
