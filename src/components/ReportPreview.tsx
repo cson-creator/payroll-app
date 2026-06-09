@@ -448,7 +448,7 @@ function TrendGrid({ data, nursingLines }: { data: ReportData; nursingLines: Nur
                       {pending
                         ? <span style={{ color: '#E0DED6' }}>—</span>
                         : <span style={{ color: row.isTotal ? (v! >= PPD_RED / (d.census || 1) ? '#A32D2D' : '#185FA5') : row.isAgency && v! > 0 ? '#854F0B' : 'inherit' }}>
-                          {row.isCensus ? v : (v === 0 ? '—' : v!.toFixed(2))}
+                          {'isCensus' in row && row.isCensus ? v : (v === 0 ? '—' : v!.toFixed(2))}
                         </span>
                       }
                     </td>
