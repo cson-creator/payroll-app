@@ -1,24 +1,30 @@
 'use client'
 import { ReportData } from '@/types'
-import { NURSING_LICENSED, NURSING_MEDAIDES, NURSING_AIDES, NURSING_ADMIN, SHIFTKEY_SPECIALTY_MAP } from '@/lib/departments'
+import { SHIFTKEY_SPECIALTY_MAP, FACILITY_CONFIGS, getFacilityConfigKey, NursingLineItem, AncillaryLineItem } from '@/lib/departments'
 import { shortDate } from '@/lib/cycle'
-import { Line } from 'react-chartjs-2'
-import {
-  Chart as ChartJS, CategoryScale, LinearScale, PointElement,
-  LineElement, Tooltip, Filler
-} from 'chart.js'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Filler)
+// ── PPD threshold ──────────────────────────────────────
+const PPD_RED = 3.90
 
-// ── PPD color ──────────────────────────────────────────
 function ppdColor(v: number): string {
-  if (v >= 3.49) return '#A32D2D'
+  if (v >= PPD_RED) return '#A32D2D'
   if (v >= 3.00) return '#854F0B'
   return '#185FA5'
 }
 
-// ── Compute per-day nursing totals ────────────────────
-function computeDay(day: ReportData['days'][0], census: number | null) {
+// ── Day-of-week helper ─────────────────────────────────
+function isWeekday(dateStr: string): boolean {
+  const d = new Date(dateStr + 'T12:00:00')
+  const dow = d.getDay()
+  return dow >= 1 && dow <= 5
+}
+
+// ── Compute all line item values for one day ──────────
+function computeLineItems(
+  day: ReportData['days'][0],
+  census: number | null,
+  nursingLines: NursingLineItem[]
+) {
   const emp = day.empeon
   const sk = day.shiftkey
 
@@ -28,108 +34,117 @@ function computeDay(day: ReportData['days'][0], census: number | null) {
     skCanon[canon] = (skCanon[canon] || 0) + hrs
   }
 
-  const get = (names: string[]) =>
+  const getEmp = (names: string[]) =>
     names.reduce((sum, n) => sum + (emp[n]?.reg || 0) + (emp[n]?.ot || 0), 0)
-  const getOT = (names: string[]) =>
+  const getEmpReg = (names: string[]) =>
+    names.reduce((sum, n) => sum + (emp[n]?.reg || 0), 0)
+  const getEmpOT = (names: string[]) =>
     names.reduce((sum, n) => sum + (emp[n]?.ot || 0), 0)
   const getSK = (names: string[]) =>
     names.reduce((sum, n) => sum + (skCanon[n] || 0), 0)
 
-  const rnHrs    = get(['RN'])
-  const lvnHrs   = get(['LVN'])
-  const rnlvnAg  = getSK(['RN', 'LVN'])
-  const cmaHrs   = get(['CMT'])
-  const cmaAg    = getSK(['CMT'])
-  const cnaHrs   = get(['CNA'])
-  const cnaAg    = getSK(['CNA'])
-  const adminHrs = get(NURSING_ADMIN)
-  const totalOT  = getOT([...NURSING_LICENSED, ...NURSING_MEDAIDES, ...NURSING_AIDES])
-  const agencyTotal = rnlvnAg + cmaAg + cnaAg
+  // Build values per key
+  const vals: Record<string, { reg: number; ot: number; agency: number; total: number }> = {}
 
-  const rnlvnTotal  = rnHrs + lvnHrs + rnlvnAg
-  const rnlvncma    = rnlvnTotal + cmaHrs + cmaAg
-  const rnlvncmacna = rnlvncma + cnaHrs + cnaAg
-  const allNursing  = rnlvncmacna + adminHrs
+  // First pass: simple rows
+  for (const line of nursingLines) {
+    if (line.isSubtotal || line.isTotal) continue
+    if (line.isAgency) {
+      const agency = getSK(line.skNames || [])
+      vals[line.key] = { reg: 0, ot: 0, agency, total: agency }
+    } else {
+      let reg = getEmpReg(line.empeonNames)
+      const ot = getEmpOT(line.empeonNames)
+      // DON auto-attribution: 8hrs on weekdays if no Empeon data
+      if (line.autoDON && reg === 0 && ot === 0 && isWeekday(day.date)) {
+        reg = 8
+      }
+      vals[line.key] = { reg, ot, agency: 0, total: reg + ot }
+    }
+  }
+
+  // Second pass: subtotals and totals
+  // rnlvn = rn + lvn + rnlvnAg
+  const rnTotal   = (vals['rn']?.total || 0) + (vals['lvn']?.total || 0) + (vals['rnlvnAg']?.agency || 0)
+  const cmtTotal  = (vals['cmt']?.total || 0) + (vals['cmtAg']?.agency || 0)
+  const cnaTotal  = (vals['cna']?.total || 0) + (vals['cnaAg']?.agency || 0)
+
+  // Nursing admin total = sum of all non-rn/lvn/cmt/cna/agency/subtotal/total rows
+  const adminKeys = nursingLines
+    .filter(l => !l.isAgency && !l.isSubtotal && !l.isTotal && !['rn','lvn','cmt','cna'].includes(l.key))
+    .map(l => l.key)
+  const adminTotal = adminKeys.reduce((sum, k) => sum + (vals[k]?.total || 0), 0)
+
+  const rnlvnCmtTotal = rnTotal + cmtTotal
+  const allNursingTotal = rnlvnCmtTotal + cnaTotal + adminTotal
+
+  vals['rnlvn']      = { reg: 0, ot: 0, agency: 0, total: rnTotal }
+  vals['rnlvncmt']   = { reg: 0, ot: 0, agency: 0, total: rnlvnCmtTotal }
+  vals['allNursing'] = { reg: 0, ot: 0, agency: 0, total: allNursingTotal }
+
+  // Total OT (nursing staff only, not admin)
+  const totalOT = ['rn','lvn','cmt','cna'].reduce((sum, k) => sum + (vals[k]?.ot || 0), 0)
+  // Total agency
+  const totalAgency = (vals['rnlvnAg']?.agency || 0) + (vals['cmtAg']?.agency || 0) + (vals['cnaAg']?.agency || 0)
 
   const ppd = (hrs: number) => census ? hrs / census : 0
 
-  return {
-    rnHrs, lvnHrs, rnlvnAg, cmaHrs, cmaAg, cnaHrs, cnaAg, adminHrs,
-    totalOT, agencyTotal,
-    rnlvnTotal, rnlvncma, rnlvncmacna, allNursing,
-    ppd,
-    skCanon,
-  }
+  return { vals, totalOT, totalAgency, allNursing: allNursingTotal, ppd }
 }
 
 // ── Format helpers ─────────────────────────────────────
-const f2 = (n: number) => n === 0 ? '—' : n.toFixed(2)
-const fh = (n: number) => n === 0 ? '—' : n.toFixed(1)
+const fh  = (n: number) => n === 0 ? '—' : n.toFixed(1)
+const f2  = (n: number) => n === 0 ? '—' : n.toFixed(2)
 
 export function ReportPreview({ data, reportId }: { data: ReportData; reportId: string }) {
   const today = data.days[data.currentDay - 1]
   const census = today?.census ?? null
-  const computed = today ? computeDay(today, census) : null
-  const cycleAvgCensus = data.days.filter(d => d.census).reduce((s, d, _, a) => s + (d.census || 0) / a.length, 0)
 
+  const configKey = getFacilityConfigKey(data.facility?.name || '')
+  const config = FACILITY_CONFIGS[configKey]
+  const { nursingLines, ancillaryLines } = config
+
+  const computed = today ? computeLineItems(today, census, nursingLines) : null
+
+  const cycleAvgCensus = (() => {
+    const days = data.days.filter(d => d.census)
+    return days.length ? days.reduce((s, d) => s + (d.census || 0), 0) / days.length : 0
+  })()
+
+  // Cycle agency total
   const cycleAgency = data.days.reduce((sum, d) => {
-    const skVals = Object.values(d.shiftkey).reduce((a, b) => a + b, 0)
-    return sum + skVals
+    return sum + Object.values(d.shiftkey).reduce((a, b) => a + b, 0)
   }, 0)
 
-  // PPD trend data — divide hours by census to get actual PPD values
-  const trendDays = data.days.slice(0, data.currentDay)
-  const allNursingPPD = trendDays.map(d => {
-    const c = computeDay(d, d.census)
-    return d.census ? parseFloat((c.allNursing / d.census).toFixed(2)) : null
-  })
-  const combPPD = trendDays.map(d => {
-    const c = computeDay(d, d.census)
-    return d.census ? parseFloat((c.rnlvncmacna / d.census).toFixed(2)) : null
-  })
-  const cycleAvgPPD = allNursingPPD.filter(Boolean).reduce((s, v, _, a) => s! + v! / a.length, 0) || 0
-  const chartLabels = trendDays.map(d => shortDate(d.date))
-  const chartMax = Math.ceil(Math.max(4, ...allNursingPPD.filter(Boolean) as number[], ...combPPD.filter(Boolean) as number[]) + 0.5)
+  // Cycle avg PPD
+  const completedPPDs = data.days
+    .filter(d => d.census)
+    .map(d => {
+      const c = computeLineItems(d, d.census, nursingLines)
+      return d.census ? c.allNursing / d.census : 0
+    })
+  const cycleAvgPPD = completedPPDs.length
+    ? completedPPDs.reduce((a, b) => a + b, 0) / completedPPDs.length
+    : 0
 
-  const ANCILLARY_GROUPS = ['Housekeeping/Laundry', 'Dietary', 'Maintenance', 'Rehab', 'Activities', 'Social Service', 'Administration']
+  const todayPPD = computed && census ? computed.ppd(computed.allNursing) : 0
+  const ppdAboveThreshold = todayPPD >= PPD_RED
 
-  function getAncillaryRows(day: ReportData['days'][0]) {
-    const rows: { group: string; reg: number; ot: number; total: number }[] = []
-    const grouped: Record<string, { reg: number; ot: number }> = {}
-    for (const [name, hrs] of Object.entries(day.empeon)) {
-      const group = getGroup(name)
-      if (!group || group === 'Nursing') continue
-      if (!grouped[group]) grouped[group] = { reg: 0, ot: 0 }
-      grouped[group].reg += hrs.reg
-      grouped[group].ot += hrs.ot
-    }
-    for (const g of ANCILLARY_GROUPS) {
-      if (grouped[g]) {
-        rows.push({ group: g, ...grouped[g], total: grouped[g].reg + grouped[g].ot })
-      }
-    }
-    return rows
-  }
-
-  // Individual nursing admin rows — only positions that have hours today
-  function getAdminRows(day: ReportData['days'][0]) {
-    return NURSING_ADMIN
-      .filter(name => (day.empeon[name]?.reg || 0) + (day.empeon[name]?.ot || 0) > 0)
-      .map(name => ({
-        name,
-        reg: day.empeon[name]?.reg || 0,
-        ot: day.empeon[name]?.ot || 0,
-        total: (day.empeon[name]?.reg || 0) + (day.empeon[name]?.ot || 0),
-      }))
+  // Ancillary rows — always show all configured lines
+  function getAncillaryValue(line: AncillaryLineItem, day: ReportData['days'][0]) {
+    const reg = line.empeonNames.reduce((sum, n) => sum + (day.empeon[n]?.reg || 0), 0)
+    const ot = line.empeonNames.reduce((sum, n) => sum + (day.empeon[n]?.ot || 0), 0)
+    return { reg, ot, total: reg + ot }
   }
 
   return (
-    <div id={reportId} style={{ fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 13, color: '#1A1A18', background: '#FAFAF8', padding: '32px 28px', maxWidth: 860 }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid #1A1A18', paddingBottom: 14, marginBottom: 24 }}>
+    <div id={reportId} style={{ fontFamily: "'IBM Plex Sans', sans-serif", fontSize: 12, color: '#1A1A18', background: '#FAFAF8', padding: '28px 28px', maxWidth: 860 }}>
+
+      {/* ── Header ── */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', borderBottom: '2px solid #1A1A18', paddingBottom: 12, marginBottom: 20 }}>
         <div>
-          <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em' }}>{data.facility.name}</div>
-          <div style={{ fontSize: 13, color: '#5F5E5A', marginTop: 2 }}>
+          <div style={{ fontSize: 20, fontWeight: 700, letterSpacing: '-0.02em' }}>{data.facility?.name}</div>
+          <div style={{ fontSize: 12, color: '#5F5E5A', marginTop: 2 }}>
             Payroll report &nbsp;·&nbsp; {today ? new Date(today.date + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) : ''}
           </div>
         </div>
@@ -138,114 +153,193 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
             Cycle day {data.currentDay} of 14
           </div>
           <div style={{ fontSize: 12, color: '#5F5E5A' }}>
-            Cycle: {shortDate(data.cycleStart)} – {shortDate(data.cycleEnd)}&nbsp;·&nbsp;CMS {data.facility.cms_id}
+            Cycle: {shortDate(data.cycleStart)} – {shortDate(data.cycleEnd)}&nbsp;·&nbsp;CMS {data.facility?.cms_id}
           </div>
         </div>
       </div>
 
-      {/* KPIs */}
+      {/* ── KPIs ── */}
       <SectionLabel>Today at a glance</SectionLabel>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 24 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 20 }}>
         <KPI label="Census" value={census ?? '—'} sub={`Cycle avg: ${cycleAvgCensus.toFixed(0)}`} />
-        <KPI label="All nursing PPD" value={computed ? computed.ppd(computed.allNursing).toFixed(2) : '—'} valueColor="#185FA5" accent sub={`Cycle avg: ${cycleAvgPPD.toFixed(2)}`} />
-        <KPI label="Total OT hours" value={computed ? fh(computed.totalOT) : '—'} valueColor="#A32D2D" sub="RN/LVN/CMA/CNA" />
-        <KPI label="Agency hours (today)" value={computed ? fh(computed.agencyTotal) : '—'} valueColor="#854F0B" sub={`Cycle cumulative: ${cycleAgency.toFixed(1)}`} />
+        <KPI
+          label="All nursing PPD"
+          value={todayPPD > 0 ? todayPPD.toFixed(2) : '—'}
+          valueColor={ppdAboveThreshold ? '#A32D2D' : '#185FA5'}
+          accent
+          accentRed={ppdAboveThreshold}
+          sub={`Cycle avg: ${cycleAvgPPD.toFixed(2)}`}
+        />
+        <KPI
+          label="Total OT hours"
+          value={computed ? fh(computed.totalOT) : '—'}
+          valueColor="#A32D2D"
+          sub="RN/LVN/CMT/CNA"
+        />
+        {/* Agency KPI — split display */}
+        <div style={{ background: '#fff', border: '0.5px solid #E0DED6', borderRadius: 6, padding: '10px 12px' }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase' as const, color: '#9A9890', marginBottom: 4 }}>Agency hours</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, marginBottom: 4 }}>
+            <span style={{ fontSize: 22, fontWeight: 600, fontFamily: "'IBM Plex Mono',monospace", color: '#854F0B' }}>
+              {computed ? fh(computed.totalAgency) : '—'}
+            </span>
+            <span style={{ fontSize: 11, color: '#9A9890' }}>today</span>
+          </div>
+          <div style={{ borderTop: '0.5px solid #E0DED6', paddingTop: 4, display: 'flex', alignItems: 'baseline', gap: 6 }}>
+            <span style={{ fontSize: 22, fontWeight: 600, fontFamily: "'IBM Plex Mono',monospace", color: '#854F0B' }}>
+              {cycleAgency.toFixed(1)}
+            </span>
+            <span style={{ fontSize: 11, color: '#9A9890' }}>cycle</span>
+          </div>
+        </div>
       </div>
 
-      {/* Nursing table */}
-      {computed && census && today && (
+      {/* ── Nursing table ── */}
+      {census && computed && today && (
         <>
           <SectionLabel>Nursing — daily detail</SectionLabel>
           <TableWrap>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
               <thead>
-                <THead cols={['Department', 'Reg hrs', 'OT hrs', 'Agency hrs', 'Total hrs', 'PPD']} />
+                <tr>
+                  {['Department', 'Reg hrs', 'OT hrs', 'Agency hrs', 'Total hrs', 'PPD'].map((col, i) => (
+                    <th key={i} style={{
+                      fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' as const,
+                      color: '#9A9890', background: '#F1EFE8', padding: '7px 10px',
+                      textAlign: i === 0 ? 'left' : 'right',
+                      borderBottom: '0.5px solid #E0DED6', whiteSpace: 'nowrap' as const,
+                      textDecoration: i > 0 ? 'underline' : 'none',
+                    }}>{col}</th>
+                  ))}
+                </tr>
               </thead>
               <tbody>
-                {/* Licensed nursing — no sub-header */}
-                <TR cells={['RN', fh(today.empeon['RN']?.reg||0), f2(today.empeon['RN']?.ot||0), '—', fh(computed.rnHrs), <PPDCell v={computed.ppd(computed.rnHrs)} />]} />
-                <TR cells={['LVN', fh(today.empeon['LVN']?.reg||0), f2(today.empeon['LVN']?.ot||0), '—', fh(computed.lvnHrs), <PPDCell v={computed.ppd(computed.lvnHrs)} />]} />
-                <AgencyRow label="RN / LVN agency" hrs={computed.rnlvnAg} ppd={computed.ppd(computed.rnlvnAg)} />
-                <SubRow cells={['RN / LVN combined', fh(computed.rnHrs+computed.lvnHrs), '—', fh(computed.rnlvnAg), fh(computed.rnlvnTotal), <PPDCell v={computed.ppd(computed.rnlvnTotal)} bold />]} />
+                {nursingLines.map((line) => {
+                  const v = computed.vals[line.key] || { reg: 0, ot: 0, agency: 0, total: 0 }
+                  const ppd = computed.ppd(v.total)
 
-                {/* Medication aides — no sub-header */}
-                <TR cells={['CMA', fh(today.empeon['CMT']?.reg||0), f2(today.empeon['CMT']?.ot||0), '—', fh(computed.cmaHrs), <PPDCell v={computed.ppd(computed.cmaHrs)} />]} />
-                <AgencyRow label="CMA agency" hrs={computed.cmaAg} ppd={computed.ppd(computed.cmaAg)} />
-                <SubRow cells={['RN / LVN / CMA', fh(computed.rnHrs+computed.lvnHrs+computed.cmaHrs), '—', fh(computed.rnlvnAg+computed.cmaAg), fh(computed.rnlvncma), <PPDCell v={computed.ppd(computed.rnlvncma)} bold />]} />
+                  if (line.isTotal) {
+                    // All nursing total row
+                    const totalReg = nursingLines
+                      .filter(l => !l.isAgency && !l.isSubtotal && !l.isTotal)
+                      .reduce((sum, l) => sum + (computed.vals[l.key]?.reg || 0), 0)
+                    const totalOT = nursingLines
+                      .filter(l => !l.isAgency && !l.isSubtotal && !l.isTotal)
+                      .reduce((sum, l) => sum + (computed.vals[l.key]?.ot || 0), 0)
+                    const totalAgency = nursingLines
+                      .filter(l => l.isAgency)
+                      .reduce((sum, l) => sum + (computed.vals[l.key]?.agency || 0), 0)
+                    const allTotal = computed.allNursing
+                    const allPPD = computed.ppd(allTotal)
+                    return (
+                      <tr key={line.key} style={{ background: '#E6F1FB', borderTop: '1.5px solid #378ADD' }}>
+                        <td style={{ padding: '7px 10px', fontWeight: 700, fontSize: 13, color: '#185FA5', fontFamily: "'IBM Plex Sans',sans-serif" }}>{line.label}</td>
+                        <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, fontSize: 13, color: '#185FA5', fontFamily: "'IBM Plex Mono',monospace" }}>{fh(totalReg)}</td>
+                        <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, fontSize: 13, color: '#A32D2D', fontFamily: "'IBM Plex Mono',monospace" }}>{fh(totalOT)}</td>
+                        <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, fontSize: 13, color: '#A32D2D', fontFamily: "'IBM Plex Mono',monospace" }}>{fh(totalAgency)}</td>
+                        <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, fontSize: 14, color: '#185FA5', fontFamily: "'IBM Plex Mono',monospace" }}>{fh(allTotal)}</td>
+                        <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, fontSize: 14, color: allPPD >= PPD_RED ? '#A32D2D' : '#185FA5', fontFamily: "'IBM Plex Mono',monospace" }}>{allPPD.toFixed(2)}</td>
+                      </tr>
+                    )
+                  }
 
-                {/* Aides — no sub-header */}
-                <TR cells={['CNA', fh(today.empeon['CNA']?.reg||0), f2(today.empeon['CNA']?.ot||0), '—', fh(computed.cnaHrs), <PPDCell v={computed.ppd(computed.cnaHrs)} />]} />
-                <AgencyRow label="CNA agency" hrs={computed.cnaAg} ppd={computed.ppd(computed.cnaAg)} />
-                <SubRow cells={['RN / LVN / CMA / CNA', fh(computed.rnHrs+computed.lvnHrs+computed.cmaHrs+computed.cnaHrs), '—', fh(computed.cnaAg+computed.rnlvnAg+computed.cmaAg), fh(computed.rnlvncmacna), <PPDCell v={computed.ppd(computed.rnlvncmacna)} bold />]} />
+                  if (line.isSubtotal) {
+                    return (
+                      <tr key={line.key} style={{ background: '#F5F4F0' }}>
+                        <td style={{ padding: '6px 10px', fontWeight: 700, fontSize: 12, fontFamily: "'IBM Plex Sans',sans-serif", borderBottom: '0.5px solid #E0DED6', textDecoration: 'underline' }}>{line.label}</td>
+                        <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, borderBottom: '0.5px solid #E0DED6' }}>—</td>
+                        <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, borderBottom: '0.5px solid #E0DED6' }}>—</td>
+                        <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, borderBottom: '0.5px solid #E0DED6' }}>—</td>
+                        <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, borderBottom: '0.5px solid #E0DED6' }}>{fh(v.total)}</td>
+                        <td style={{ padding: '6px 10px', textAlign: 'right', fontWeight: 700, fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, borderBottom: '0.5px solid #E0DED6' }}>
+                          <span style={{ color: ppdColor(ppd) }}>{ppd > 0 ? ppd.toFixed(2) : '—'}</span>
+                        </td>
+                      </tr>
+                    )
+                  }
 
-                {/* Nursing admin — individual rows, only positions with hours */}
-                {getAdminRows(today).map(row => (
-                  <TR key={row.name} cells={[row.name, fh(row.reg), f2(row.ot), '—', fh(row.total), <PPDCell v={computed.ppd(row.total)} />]} />
-                ))}
+                  if (line.isAgency) {
+                    return (
+                      <tr key={line.key}>
+                        <td style={{ padding: '5px 10px 5px 22px', fontSize: 11, color: '#5F5E5A', borderBottom: '0.5px solid #E0DED6' }}>{line.label}</td>
+                        <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', color: '#9A9890', fontSize: 11 }}>—</td>
+                        <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', color: '#A32D2D', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>—</td>
+                        <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', color: v.agency > 0 ? '#A32D2D' : '#9A9890', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>{fh(v.agency)}</td>
+                        <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', color: v.agency > 0 ? '#A32D2D' : '#9A9890', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>{fh(v.agency)}</td>
+                        <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', color: '#9A9890', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>{ppd > 0 ? ppd.toFixed(2) : '—'}</td>
+                      </tr>
+                    )
+                  }
 
-                <TotalRow cells={['All nursing', '', '', '', fh(computed.allNursing), <span style={{ fontSize:15, color: ppdColor(computed.ppd(computed.allNursing)), fontWeight:600 }}>{computed.ppd(computed.allNursing).toFixed(2)}</span>]} />
+                  // Standard row
+                  return (
+                    <tr key={line.key}>
+                      <td style={{ padding: '5px 10px', fontSize: 12, borderBottom: '0.5px solid #E0DED6' }}>{line.label}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>{v.reg > 0 ? v.reg.toFixed(1) : '—'}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: v.ot > 0 ? '#A32D2D' : '#9A9890' }}>{v.ot > 0 ? v.ot.toFixed(1) : '—'}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: v.agency > 0 ? '#A32D2D' : '#9A9890' }}>{fh(v.agency)}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>{v.total > 0 ? v.total.toFixed(1) : '—'}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>
+                        <span style={{ color: ppd > 0 ? ppdColor(ppd) : '#9A9890' }}>{ppd > 0 ? ppd.toFixed(2) : '—'}</span>
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </TableWrap>
 
-          {/* Ancillary */}
-          <SectionLabel style={{ marginTop: 20 }}>Ancillary &amp; support — daily detail</SectionLabel>
+          {/* ── Administration & Ancillary ── */}
+          <SectionLabel style={{ marginTop: 16 }}>Administration &amp; Ancillary — daily detail</SectionLabel>
           <TableWrap>
             <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><THead cols={['Department', 'Reg hrs', 'OT hrs', 'Agency hrs', 'Total hrs', 'PPD']} /></thead>
+              <thead>
+                <tr>
+                  {['Department', 'Reg hrs', 'OT hrs', 'Agency hrs', 'Total hrs', 'PPD'].map((col, i) => (
+                    <th key={i} style={{
+                      fontSize: 10, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' as const,
+                      color: '#9A9890', background: '#F1EFE8', padding: '7px 10px',
+                      textAlign: i === 0 ? 'left' : 'right',
+                      borderBottom: '0.5px solid #E0DED6', whiteSpace: 'nowrap' as const,
+                    }}>{col}</th>
+                  ))}
+                </tr>
+              </thead>
               <tbody>
-                {getAncillaryRows(today).map(r => (
-                  <TR key={r.group} cells={[r.group, fh(r.reg), f2(r.ot), '—', fh(r.total), <PPDCell v={census ? r.total/census : 0} dim />]} />
-                ))}
+                {ancillaryLines.map(line => {
+                  const v = getAncillaryValue(line, today)
+                  const ppd = census ? v.total / census : 0
+                  return (
+                    <tr key={line.key}>
+                      <td style={{ padding: '5px 10px', fontSize: 12, borderBottom: '0.5px solid #E0DED6' }}>{line.label}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>{v.reg > 0 ? v.reg.toFixed(1) : '—'}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: v.ot > 0 ? '#A32D2D' : '#9A9890' }}>{v.ot > 0 ? v.ot.toFixed(1) : '—'}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#9A9890' }}>—</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }}>{v.total > 0 ? v.total.toFixed(1) : '—'}</td>
+                      <td style={{ textAlign: 'right', padding: '5px 10px', borderBottom: '0.5px solid #E0DED6', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, color: '#9A9890' }}>{ppd > 0 ? ppd.toFixed(2) : '—'}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </TableWrap>
         </>
       )}
 
-      {/* Page break visual */}
-      <div id="page-break-marker" style={{ display:'flex', alignItems:'center', gap:12, margin:'36px 0 28px', color:'#9A9890', fontSize:10, letterSpacing:'0.1em', textTransform:'uppercase' }}>
-        <div style={{ flex:1, height:0.5, background:'#C8C6BE' }} />
+      {/* ── Page break ── */}
+      <div id="page-break-marker" style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '28px 0 24px', color: '#9A9890', fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase' as const }}>
+        <div style={{ flex: 1, height: 0.5, background: '#C8C6BE' }} />
         Page 2 — PPD trend
-        <div style={{ flex:1, height:0.5, background:'#C8C6BE' }} />
+        <div style={{ flex: 1, height: 0.5, background: '#C8C6BE' }} />
       </div>
 
-      {/* Trend chart */}
-      <div style={{ background:'#fff', border:'0.5px solid #E0DED6', borderRadius:6, padding:'18px 20px 12px', marginBottom:12 }}>
-        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
-          <div>
-            <div style={{ fontSize:13, fontWeight:600 }}>All nursing PPD — cycle trend</div>
-            <div style={{ fontSize:11, color:'#9A9890' }}>Days 1–{data.currentDay} complete &nbsp;·&nbsp; Days {data.currentDay+1}–14 pending &nbsp;·&nbsp; Cycle avg: {cycleAvgPPD.toFixed(2)}</div>
-          </div>
-          <span style={{ fontSize:11, background:'#EAF3DE', color:'#3B6D11', fontWeight:600, padding:'3px 9px', borderRadius:3 }}>Avg {cycleAvgPPD.toFixed(2)}</span>
-        </div>
-        <div style={{ height: 130 }}>
-          <Line
-            data={{
-              labels: chartLabels,
-              datasets: [
-                { label: 'All nursing PPD', data: allNursingPPD, borderColor: '#378ADD', backgroundColor: 'rgba(55,138,221,0.07)', fill: true, tension: 0.35, pointRadius: 4, borderWidth: 2.5 },
-                { label: 'RN/LVN/CMA/CNA', data: combPPD, borderColor: '#639922', backgroundColor: 'transparent', tension: 0.35, pointRadius: 3, borderWidth: 1.5, borderDash: [5,4] },
-                { label: 'Cycle avg', data: chartLabels.map(() => cycleAvgPPD), borderColor: '#EF9F27', backgroundColor: 'transparent', tension: 0, pointRadius: 0, borderWidth: 1, borderDash: [8,5] },
-              ]
-            }}
-            options={{ responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { font: { size: 11 } } }, y: { min: 0, max: chartMax, ticks: { font: { size: 11 } } } } }}
-          />
-        </div>
-        <div style={{ display:'flex', gap:18, marginTop:10 }}>
-          <LegLine color="#378ADD" label="All nursing PPD" />
-          <LegLine color="#639922" label="RN/LVN/CMA/CNA" dash />
-          <LegLine color="#EF9F27" label="Cycle avg" dash />
-        </div>
-      </div>
-
-      {/* PPD trend grid */}
+      {/* ── PPD cycle grid (chart removed) ── */}
       <SectionLabel>PPD by category — full cycle grid</SectionLabel>
-      <TrendGrid data={data} ppdColor={ppdColor} cycleAvgPPD={cycleAvgPPD} />
+      <TrendGrid data={data} nursingLines={nursingLines} />
 
-      {/* Footer */}
-      <div style={{ marginTop:40, paddingTop:14, borderTop:'0.5px solid #E0DED6', fontSize:11, color:'#9A9890', display:'flex', justifyContent:'space-between' }}>
-        <span>{data.facility.name} &nbsp;·&nbsp; CMS ID: {data.facility.cms_id}</span>
+      {/* ── Footer ── */}
+      <div style={{ marginTop: 32, paddingTop: 12, borderTop: '0.5px solid #E0DED6', fontSize: 11, color: '#9A9890', display: 'flex', justifyContent: 'space-between' }}>
+        <span>{data.facility?.name} &nbsp;·&nbsp; CMS ID: {data.facility?.cms_id}</span>
         <span>Generated {new Date().toLocaleDateString()} &nbsp;·&nbsp; Cycle {shortDate(data.cycleStart)} – {shortDate(data.cycleEnd)}</span>
       </div>
     </div>
@@ -255,172 +349,112 @@ export function ReportPreview({ data, reportId }: { data: ReportData; reportId: 
 // ── Sub-components ─────────────────────────────────────
 
 function SectionLabel({ children, style }: any) {
-  return <div style={{ fontSize:11, fontWeight:600, letterSpacing:'0.08em', textTransform:'uppercase', color:'#5F5E5A', marginBottom:10, ...style }}>{children}</div>
+  return <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: '#5F5E5A', marginBottom: 8, ...style }}>{children}</div>
 }
 
-function KPI({ label, value, sub, valueColor, accent }: any) {
+function KPI({ label, value, sub, valueColor, accent, accentRed }: any) {
   return (
-    <div style={{ background: accent ? '#E6F1FB' : '#fff', border: `0.5px solid ${accent ? '#378ADD' : '#E0DED6'}`, borderRadius:6, padding:'12px 14px' }}>
-      <div style={{ fontSize:10, fontWeight:600, letterSpacing:'0.07em', textTransform:'uppercase', color:'#9A9890', marginBottom:4 }}>{label}</div>
-      <div style={{ fontSize:26, fontWeight:600, fontFamily:"'IBM Plex Mono',monospace", lineHeight:1, color: valueColor || '#1A1A18' }}>{value}</div>
-      <div style={{ fontSize:10, color:'#9A9890', marginTop:5 }}>{sub}</div>
+    <div style={{
+      background: accentRed ? '#FDECEA' : accent ? '#E6F1FB' : '#fff',
+      border: `0.5px solid ${accentRed ? '#E8A09A' : accent ? '#378ADD' : '#E0DED6'}`,
+      borderRadius: 6, padding: '10px 12px',
+    }}>
+      <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.07em', textTransform: 'uppercase' as const, color: '#9A9890', marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 600, fontFamily: "'IBM Plex Mono',monospace", lineHeight: 1, color: valueColor || '#1A1A18' }}>{value}</div>
+      <div style={{ fontSize: 10, color: '#9A9890', marginTop: 4 }}>{sub}</div>
     </div>
   )
 }
 
 function TableWrap({ children }: any) {
-  return <div style={{ background:'#fff', border:'0.5px solid #E0DED6', borderRadius:6, overflow:'hidden', marginBottom:16 }}>{children}</div>
+  return <div style={{ background: '#fff', border: '0.5px solid #E0DED6', borderRadius: 6, overflow: 'hidden', marginBottom: 12 }}>{children}</div>
 }
 
-function THead({ cols }: { cols: string[] }) {
-  return (
-    <tr>
-      {cols.map((c, i) => (
-        <th key={i} style={{ fontSize:10, fontWeight:600, letterSpacing:'0.06em', textTransform:'uppercase', color:'#9A9890', background:'#F1EFE8', padding:'7px 12px', textAlign: i===0?'left':'right', borderBottom:'0.5px solid #E0DED6', whiteSpace:'nowrap' }}>{c}</th>
-      ))}
-    </tr>
-  )
-}
+function TrendGrid({ data, nursingLines }: { data: ReportData; nursingLines: NursingLineItem[] }) {
+  // Build grid rows from nursingLines — always show all rows
+  const gridRows = nursingLines.map(line => ({
+    key: line.key,
+    label: line.label,
+    isAgency: line.isAgency,
+    isSubtotal: line.isSubtotal,
+    isTotal: line.isTotal,
+  }))
 
-function TR({ cells }: { cells: any[] }) {
-  return (
-    <tr>
-      {cells.map((c, i) => (
-        <td key={i} style={{ padding:'6px 12px', textAlign: i===0?'left':'right', borderBottom:'0.5px solid #E0DED6', fontFamily: i===0?"'IBM Plex Sans',sans-serif":"'IBM Plex Mono',monospace", fontSize: i===0?13:12 }}>{c}</td>
-      ))}
-    </tr>
-  )
-}
-
-function SubRow({ cells }: { cells: any[] }) {
-  return (
-    <tr style={{ background:'#F5F4F0' }}>
-      {cells.map((c, i) => (
-        <td key={i} style={{ padding:'6px 12px', textAlign: i===0?'left':'right', borderBottom:'0.5px solid #E0DED6', fontWeight:600, fontFamily: i===0?"'IBM Plex Sans',sans-serif":"'IBM Plex Mono',monospace", fontSize: i===0?13:12 }}>{c}</td>
-      ))}
-    </tr>
-  )
-}
-
-function TotalRow({ cells }: { cells: any[] }) {
-  return (
-    <tr style={{ background:'#E6F1FB', borderTop:'1px solid #378ADD' }}>
-      {cells.map((c, i) => (
-        <td key={i} style={{ padding:'6px 12px', textAlign: i===0?'left':'right', fontWeight:600, color:'#185FA5', fontFamily: i===0?"'IBM Plex Sans',sans-serif":"'IBM Plex Mono',monospace", fontSize: i===0?14:13 }}>{c}</td>
-      ))}
-    </tr>
-  )
-}
-
-function AgencyRow({ label, hrs, ppd }: { label: string; hrs: number; ppd: number }) {
-  return (
-    <tr>
-      <td style={{ padding:'6px 12px 6px 24px', fontSize:12, color:'#5F5E5A', borderBottom:'0.5px solid #E0DED6' }}>{label}</td>
-      <td style={{ textAlign:'right', padding:'6px 12px', borderBottom:'0.5px solid #E0DED6', color:'#9A9890', fontSize:12 }}>—</td>
-      <td style={{ textAlign:'right', padding:'6px 12px', borderBottom:'0.5px solid #E0DED6', color:'#9A9890', fontSize:12 }}>—</td>
-      <td style={{ textAlign:'right', padding:'6px 12px', borderBottom:'0.5px solid #E0DED6', color: hrs > 0 ? '#854F0B' : '#9A9890', fontFamily:"'IBM Plex Mono',monospace", fontSize:12 }}>{fh(hrs)}</td>
-      <td style={{ textAlign:'right', padding:'6px 12px', borderBottom:'0.5px solid #E0DED6', color: hrs > 0 ? '#854F0B' : '#9A9890', fontFamily:"'IBM Plex Mono',monospace", fontSize:12 }}>{fh(hrs)}</td>
-      <td style={{ textAlign:'right', padding:'6px 12px', borderBottom:'0.5px solid #E0DED6', color:'#9A9890', fontFamily:"'IBM Plex Mono',monospace", fontSize:12 }}>{ppd > 0 ? ppd.toFixed(2) : '—'}</td>
-    </tr>
-  )
-}
-
-function PPDCell({ v, bold, dim }: { v: number; bold?: boolean; dim?: boolean }) {
-  const color = dim ? '#9A9890' : ppdColor(v)
-  return <span style={{ color, fontWeight: bold ? 600 : 400 }}>{v > 0 ? v.toFixed(2) : '—'}</span>
-}
-
-function LegLine({ color, label, dash }: { color: string; label: string; dash?: boolean }) {
-  return (
-    <div style={{ display:'flex', alignItems:'center', gap:6, fontSize:11, color:'#5F5E5A' }}>
-      <div style={{ width:20, height: dash ? 0 : 2.5, borderRadius:2, background: dash ? 'transparent' : color, borderTop: dash ? `2px dashed ${color}` : 'none' }} />
-      {label}
-    </div>
-  )
-}
-
-function TrendGrid({ data, ppdColor, cycleAvgPPD }: { data: ReportData; ppdColor: (v:number)=>string; cycleAvgPPD: number }) {
-  const trendRows = [
-    { key: 'census', label: 'Census', isCensus: true },
-    { key: 'rn', label: 'RN' },
-    { key: 'lvn', label: 'LVN' },
-    { key: 'rnlvnAg', label: 'RN/LVN agency', isAgency: true },
-    { key: 'rnlvn', label: 'RN/LVN combined', isSub: true },
-    { key: 'cma', label: 'CMA' },
-    { key: 'cmaAg', label: 'CMA agency', isAgency: true },
-    { key: 'rnlvncma', label: 'RN/LVN/CMA', isSub: true },
-    { key: 'cna', label: 'CNA' },
-    { key: 'cnaAg', label: 'CNA agency', isAgency: true },
-    { key: 'rnlvncmacna', label: 'RN/LVN/CMA/CNA', isSub: true },
-    { key: 'nursingAdm', label: 'Nursing admin' },
-    { key: 'allNursing', label: 'All nursing PPD', isTotal: true },
+  // Add census row at top
+  const allRows = [
+    { key: 'census', label: 'Census', isCensus: true, isAgency: false, isSubtotal: false, isTotal: false },
+    ...gridRows,
   ]
 
-  const dayComputations = data.days.map(d => ({ d, c: computeDay(d, d.census) }))
-
-  function getVal(key: string, dc: typeof dayComputations[0]) {
-    const { d, c } = dc
-    if (!d.census) return null
-    const ppd = (hrs: number) => d.census ? hrs / d.census : 0
-    const m: Record<string, number> = {
-      census: d.census,
-      rn: ppd(c.rnHrs), lvn: ppd(c.lvnHrs), rnlvnAg: ppd(c.rnlvnAg),
-      rnlvn: ppd(c.rnlvnTotal), cma: ppd(c.cmaHrs), cmaAg: ppd(c.cmaAg),
-      rnlvncma: ppd(c.rnlvncma), cna: ppd(c.cnaHrs), cnaAg: ppd(c.cnaAg),
-      rnlvncmacna: ppd(c.rnlvncmacna),
-      nursingAdm: ppd(c.adminHrs), allNursing: ppd(c.allNursing),
-    }
-    return m[key] ?? null
+  function getVal(key: string, day: ReportData['days'][0]): number | null {
+    if (!day.census) return null
+    if (key === 'census') return day.census
+    const config = FACILITY_CONFIGS[getFacilityConfigKey(data.facility?.name || '')]
+    const c = computeLineItems(day, day.census, config.nursingLines)
+    const v = c.vals[key]
+    if (!v) return null
+    const total = key === 'census' ? day.census : v.total
+    if (key === 'census') return day.census
+    return day.census ? total / day.census : 0
   }
 
-  const cellStyle = (isToday: boolean, isSub?: boolean, isTotal?: boolean): React.CSSProperties => ({
-    padding: '5px 6px', textAlign: 'center', fontSize: 11,
+  const cellBase: React.CSSProperties = {
+    padding: '4px 5px', textAlign: 'center', fontSize: 10,
     fontFamily: "'IBM Plex Mono',monospace",
-    background: isTotal ? '#E6F1FB' : isSub ? '#F5F4F0' : isToday ? '#E6F1FB' : 'transparent',
     borderBottom: '0.5px solid #E0DED6',
-    fontWeight: isSub || isTotal ? 600 : 400,
-  })
+  }
 
   return (
-    <div style={{ background:'#fff', border:'0.5px solid #E0DED6', borderRadius:6, overflow:'auto' }}>
-      <table style={{ width:'100%', borderCollapse:'collapse', minWidth:700 }}>
+    <div style={{ background: '#fff', border: '0.5px solid #E0DED6', borderRadius: 6, overflow: 'auto' }}>
+      <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 700 }}>
         <thead>
           <tr>
-            <th style={{ fontSize:10, fontWeight:600, textTransform:'uppercase', color:'#9A9890', background:'#F1EFE8', padding:'5px 12px', textAlign:'left', borderBottom:'0.5px solid #E0DED6', minWidth:120 }}>Metric</th>
+            <th style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase' as const, color: '#9A9890', background: '#F1EFE8', padding: '5px 10px', textAlign: 'left', borderBottom: '0.5px solid #E0DED6', minWidth: 110 }}>Metric</th>
             {data.days.map((d, i) => (
-              <th key={i} style={{ fontSize:10, padding:'5px 4px', textAlign:'center', fontWeight:600, letterSpacing:'0.04em', textTransform:'uppercase', color: i===data.currentDay-1?'#185FA5':'#9A9890', background: i===data.currentDay-1?'#E6F1FB':'#F1EFE8', borderBottom:'0.5px solid #E0DED6' }}>
-                {d.dow}<br/>{shortDate(d.date)}
+              <th key={i} style={{ fontSize: 9, padding: '4px 3px', textAlign: 'center', fontWeight: 600, letterSpacing: '0.03em', textTransform: 'uppercase' as const, color: i === data.currentDay - 1 ? '#185FA5' : '#9A9890', background: i === data.currentDay - 1 ? '#E6F1FB' : '#F1EFE8', borderBottom: '0.5px solid #E0DED6', whiteSpace: 'nowrap' as const }}>
+                {d.dow}<br />{shortDate(d.date)}
               </th>
             ))}
-            <th style={{ fontSize:10, padding:'5px 6px', textAlign:'center', fontWeight:600, textTransform:'uppercase', color:'#5F5E5A', background:'#F1EFE8', borderBottom:'0.5px solid #E0DED6' }}>Avg</th>
+            <th style={{ fontSize: 9, padding: '4px 5px', textAlign: 'center', fontWeight: 700, textTransform: 'uppercase' as const, color: '#5F5E5A', background: '#F1EFE8', borderBottom: '0.5px solid #E0DED6' }}>Avg</th>
           </tr>
         </thead>
         <tbody>
-          {trendRows.map((row, ri) => {
-            const vals = data.days.map((_, i) => getVal(row.key!, dayComputations[i]))
-            const completedVals = vals.filter(v => v !== null) as number[]
-            const avg = completedVals.length ? completedVals.reduce((a,b)=>a+b,0)/completedVals.length : null
+          {allRows.map((row) => {
+            const vals = data.days.map(d => getVal(row.key, d))
+            const completed = vals.filter(v => v !== null) as number[]
+            const avg = completed.length ? completed.reduce((a, b) => a + b, 0) / completed.length : null
+
+            const rowBg = row.isTotal ? '#E6F1FB' : row.isSubtotal ? '#F5F4F0' : 'transparent'
 
             return (
-              <tr key={ri}>
-                <td style={{ padding:'5px 12px', fontSize: row.isAgency ? 11 : 12, color: row.isAgency?'#5F5E5A':'#1A1A18', paddingLeft: row.isAgency ? 22 : 12, borderBottom:'0.5px solid #E0DED6', background: row.isTotal?'#E6F1FB':row.isSub?'#F5F4F0':'transparent', fontWeight: row.isSub||row.isTotal?600:400 }}>
+              <tr key={row.key} style={{ background: rowBg }}>
+                <td style={{
+                  padding: '4px 10px', fontSize: row.isAgency ? 10 : 11,
+                  paddingLeft: row.isAgency ? 20 : 10,
+                  color: row.isAgency ? '#5F5E5A' : '#1A1A18',
+                  borderBottom: '0.5px solid #E0DED6',
+                  fontWeight: row.isSubtotal || row.isTotal ? 700 : 400,
+                  textDecoration: row.isSubtotal ? 'underline' : 'none',
+                  background: rowBg,
+                }}>
                   {row.label}
                 </td>
                 {data.days.map((d, i) => {
                   const v = vals[i]
                   const isToday = i === data.currentDay - 1
-                  const isPending = v === null
+                  const pending = v === null
                   return (
-                    <td key={i} style={cellStyle(isToday, row.isSub, row.isTotal)}>
-                      {isPending ? <span style={{ color:'#E0DED6' }}>—</span> : (
-                        <span style={{ color: row.isTotal ? ppdColor(v!) : row.isAgency && v! > 0 ? '#854F0B' : 'inherit' }}>
+                    <td key={i} style={{ ...cellBase, background: row.isTotal ? '#E6F1FB' : row.isSubtotal ? '#F5F4F0' : isToday ? '#EEF5FC' : 'transparent', fontWeight: row.isSubtotal || row.isTotal ? 700 : 400 }}>
+                      {pending
+                        ? <span style={{ color: '#E0DED6' }}>—</span>
+                        : <span style={{ color: row.isTotal ? (v! >= PPD_RED / (d.census || 1) ? '#A32D2D' : '#185FA5') : row.isAgency && v! > 0 ? '#854F0B' : 'inherit' }}>
                           {row.isCensus ? v : (v === 0 ? '—' : v!.toFixed(2))}
                         </span>
-                      )}
+                      }
                     </td>
                   )
                 })}
-                <td style={{ padding:'5px 6px', textAlign:'center', fontSize:11, fontWeight:600, fontFamily:"'IBM Plex Mono',monospace", background:'#F5F4F0', borderBottom:'0.5px solid #E0DED6', color: row.isTotal && avg ? ppdColor(avg) : '#1A1A18' }}>
+                <td style={{ ...cellBase, fontWeight: row.isSubtotal || row.isTotal ? 700 : 400, background: '#F5F4F0', color: row.isTotal && avg ? (avg >= PPD_RED ? '#A32D2D' : '#185FA5') : '#1A1A18' }}>
                   {avg === null ? '—' : row.isCensus ? Math.round(avg) : avg.toFixed(2)}
                 </td>
               </tr>
@@ -430,29 +464,4 @@ function TrendGrid({ data, ppdColor, cycleAvgPPD }: { data: ReportData; ppdColor
       </table>
     </div>
   )
-}
-
-// Helper: get cc1_group for a cc2_name
-function getGroup(name: string): string | null {
-  const map: Record<string, string> = {
-    'DON':'Nursing','ADON':'Nursing','MDS':'Nursing','Wound Nurse':'Nursing',
-    'Corporate Nurse':'Nursing','Staffing Coordinator CNA':'Nursing',
-    'Staffing Coordinator LVN':'Nursing','Infection Control':'Nursing',
-    'RN':'Nursing','LVN':'Nursing','CMT':'Nursing','CNA':'Nursing',
-    'Rehab Director':'Rehab','Physical Therapist':'Rehab','PTA':'Rehab',
-    'Occupational Therapist':'Rehab','COTA':'Rehab','Speech Therapist':'Rehab',
-    'Food Service Director':'Dietary','Cook':'Dietary','Dietary Aide':'Dietary',
-    'Dietary':'Dietary','Assistant Dietary Manager':'Dietary',
-    'Housekeeping/Laundry Director':'Housekeeping/Laundry',
-    'Housekeeping':'Housekeeping/Laundry','Laundry':'Housekeeping/Laundry',
-    'Maintenance Director':'Maintenance','Maintenance':'Maintenance',
-    'Administrator':'Administration','Assistant Administrator':'Administration',
-    'Admissions':'Administration','Marketing':'Administration',
-    'Business Office Manager':'Administration','Business Office':'Administration',
-    'Purchasing':'Administration','Human Resources':'Administration',
-    'Receptionist':'Administration','Transportation':'Administration',
-    'Activity Director':'Activities','Activities':'Activities',
-    'Social Services':'Social Service',
-  }
-  return map[name] || null
 }
