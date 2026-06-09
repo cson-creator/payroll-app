@@ -82,12 +82,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No matching rows found for selected dates.' }, { status: 400 })
   }
 
-  const { error } = await supabaseAdmin
-    .from('daily_shiftkey')
-    .upsert(upsertRows, { onConflict: 'facility_id,date,specialty' })
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-
+  // Wipe all existing ShiftKey rows for the selected dates before inserting.
+  // This ensures a fresh upload fully replaces stale data rather than merging with it.
   const datesSaved = [...new Set(upsertRows.map(r => r.date))].sort()
+
+  const { error: deleteError } = await supabaseAdmin
+    .from('daily_shiftkey')
+    .delete()
+    .eq('facility_id', facilityId)
+    .in('date', datesSaved)
+
+  if (deleteError) return NextResponse.json({ error: deleteError.message }, { status: 500 })
+
+  const { error: insertError } = await supabaseAdmin
+    .from('daily_shiftkey')
+    .insert(upsertRows)
+
+  if (insertError) return NextResponse.json({ error: insertError.message }, { status: 500 })
+
   return NextResponse.json({ success: true, rowsIngested: upsertRows.length, datesSaved })
 }
