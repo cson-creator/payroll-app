@@ -57,6 +57,11 @@ export default function Home() {
   const [shiftkeyStatus, setShiftkeyStatus] = useState<UploadStatus>('idle')
   const [shiftkeyMsg, setShiftkeyMsg] = useState('')
 
+  const [shiftkeyFile, setShiftkeyFile] = useState<File | null>(null)
+const [shiftkeyAvailableDates, setShiftkeyAvailableDates] = useState<{ date: string; rowCount: number }[]>([])
+const [shiftkeySelectedDates, setShiftkeySelectedDates] = useState<Set<string>>(new Set())
+const [shiftkeyParsing, setShiftkeyParsing] = useState(false)
+
   const [census, setCensus] = useState<string>('')
   const [censusDate, setCensusDate] = useState(yesterday)
   const [censusSaved, setCensusSaved] = useState(false)
@@ -143,32 +148,64 @@ export default function Home() {
     }
   }
 
-  async function handleShiftkeyUpload(file: File) {
-    setShiftkeyStatus('uploading')
-    setShiftkeyMsg('')
-    const fd = new FormData()
-    fd.append('file', file)
-    fd.append('facilityId', selectedFacility.id)
-    fd.append('date', uploadDate)
-    const res = await fetch('/api/upload-shiftkey', { method: 'POST', body: fd })
-    const json = await res.json()
-    if (res.ok) {
-      setShiftkeyStatus('success')
-      setShiftkeyMsg(`✓ ${json.rowsIngested} agency rows ingested${json.note || ''}`)
-    } else {
-      setShiftkeyStatus('error')
-      setShiftkeyMsg(json.error || 'Upload failed')
-    }
+  async function handleShiftkeyFileSelected(file: File) {
+  setShiftkeyFile(file)
+  setShiftkeyStatus('uploading')
+  setShiftkeyMsg('')
+  setShiftkeyAvailableDates([])
+  setShiftkeySelectedDates(new Set())
+  setShiftkeyParsing(true)
+  const fd = new FormData()
+  fd.append('file', file)
+  fd.append('facilityId', selectedFacility.id)
+  const res = await fetch('/api/shiftkey-dates', { method: 'POST', body: fd })
+  const json = await res.json()
+  setShiftkeyParsing(false)
+  if (res.ok && json.dates?.length > 0) {
+    setShiftkeyAvailableDates(json.dates)
+    // Auto-select all dates by default
+    setShiftkeySelectedDates(new Set(json.dates.map((d: any) => d.date)))
+    setShiftkeyStatus('idle')
+    setShiftkeyMsg(`${json.dates.length} date(s) found — select which to import`)
+  } else {
+    setShiftkeyStatus('error')
+    setShiftkeyMsg(json.error || 'No valid rows found')
   }
+}
+
+async function handleShiftkeyConfirm() {
+  if (!shiftkeyFile || shiftkeySelectedDates.size === 0) return
+  setShiftkeyStatus('uploading')
+  setShiftkeyMsg('')
+  const fd = new FormData()
+  fd.append('file', shiftkeyFile)
+  fd.append('facilityId', selectedFacility.id)
+  fd.append('selectedDates', JSON.stringify([...shiftkeySelectedDates]))
+  const res = await fetch('/api/upload-shiftkey', { method: 'POST', body: fd })
+  const json = await res.json()
+  if (res.ok) {
+    setShiftkeyStatus('success')
+    setShiftkeyMsg(`✓ ${json.rowsIngested} rows saved for: ${json.datesSaved.join(', ')}`)
+    setShiftkeyAvailableDates([])
+    setShiftkeyFile(null)
+  } else {
+    setShiftkeyStatus('error')
+    setShiftkeyMsg(json.error || 'Upload failed')
+  }
+}
 
   async function handleSaveCensus() {
-    const res = await fetch('/api/save-census', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ facilityId: selectedFacility.id, date: censusDate, census: parseInt(census) }),
-    })
-    if (res.ok) setCensusSaved(true)
+  const res = await fetch('/api/save-census', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ facilityId: selectedFacility.id, date: censusDate, census: parseInt(census) }),
+  })
+  if (res.ok) {
+    setCensusSaved(true)
+    // Refresh history panel if open so the new census shows immediately
+    if (showHistory) loadHistory()
   }
+}
 
   async function handleLoadReport() {
     setLoadingReport(true)
@@ -477,29 +514,44 @@ export default function Home() {
           </div>
 
           {/* Upload card */}
-          <div style={card}>
-            <div style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 16 }}>Upload data</div>
-            <div style={{ marginBottom: 14 }}>
-              <label style={labelStyle}>Report date</label>
-              <input type="date" value={uploadDate} onChange={e => handleDateChange(e.target.value)} style={{ ...inputStyle, width: 180 }} />
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
-              <UploadZone label="Empeon CSV" accept=".csv" onFile={handleEmpeonUpload} status={empeonStatus} message={empeonMsg} />
-              <UploadZone label="ShiftKey XLS" accept=".xls,.xlsx" onFile={handleShiftkeyUpload} status={shiftkeyStatus} message={shiftkeyMsg} />
-            </div>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
-              <div>
-                <label style={labelStyle}>Census for {uploadDate}</label>
-                <input type="number" value={census} onChange={e => { setCensus(e.target.value); setCensusSaved(false) }} style={{ ...inputStyle, width: 120 }} placeholder="e.g. 88" />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-                <button onClick={handleSaveCensus} style={btnSecondary(C.green, C.greenLight)}>
-                  {censusSaved ? '✓ Saved' : 'Save census'}
-                </button>
-                <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center' }}>Required for PPD</div>
-              </div>
-            </div>
-          </div>
+        <div>
+  <UploadZone label="ShiftKey XLS" accept=".xls,.xlsx" onFile={handleShiftkeyFileSelected} status={shiftkeyParsing ? 'uploading' : shiftkeyStatus} message={shiftkeyParsing ? 'Reading file…' : shiftkeyMsg} />
+  {shiftkeyAvailableDates.length > 0 && (
+    <div style={{ marginTop: 8, background: C.bg, border: `0.5px solid ${C.borderMid}`, borderRadius: 8, padding: '10px 12px' }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase' as const, marginBottom: 8 }}>
+        Select dates to import
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 5, marginBottom: 10 }}>
+        {shiftkeyAvailableDates.map(({ date, rowCount }) => (
+          <label key={date} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', color: C.textSoft }}>
+            <input
+              type="checkbox"
+              checked={shiftkeySelectedDates.has(date)}
+              onChange={() => {
+                setShiftkeySelectedDates(prev => {
+                  const next = new Set(prev)
+                  next.has(date) ? next.delete(date) : next.add(date)
+                  return next
+                })
+              }}
+              style={{ accentColor: C.blue }}
+            />
+            <span style={{ fontFamily: "'IBM Plex Mono',sans-serif" }}>{date}</span>
+            <span style={{ fontSize: 11, color: C.textFaint }}>{rowCount} row{rowCount !== 1 ? 's' : ''}</span>
+          </label>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <button onClick={handleShiftkeyConfirm} disabled={shiftkeySelectedDates.size === 0} style={{ ...btnSecondary(C.green, C.greenLight), opacity: shiftkeySelectedDates.size === 0 ? 0.5 : 1 }}>
+          Import {shiftkeySelectedDates.size} date{shiftkeySelectedDates.size !== 1 ? 's' : ''}
+        </button>
+        <button onClick={() => { setShiftkeyAvailableDates([]); setShiftkeyFile(null); setShiftkeyStatus('idle'); setShiftkeyMsg('') }} style={btnSecondary(C.textMuted, C.bgStrip)}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  )}
+</div>
 
           {/* Cycle history */}
           <div style={card}>
