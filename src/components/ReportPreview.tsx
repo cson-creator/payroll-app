@@ -455,7 +455,7 @@ function TrendGrid({ data, nursingLines }: { data: ReportData; nursingLines: Nur
                   )
                 })}
                 <td style={{ ...cellBase, fontWeight: row.isSubtotal || row.isTotal ? 700 : 400, background: '#F5F4F0', color: row.isTotal && avg ? (avg >= PPD_RED ? '#A32D2D' : '#185FA5') : '#1A1A18' }}>
-                  {avg === null ? '—' : row.isCensus ? Math.round(avg) : avg.toFixed(2)}
+                  {avg === null ? '—' : ('isCensus' in row && row.isCensus) ? Math.round(avg) : avg.toFixed(2)}
                 </td>
               </tr>
             )
