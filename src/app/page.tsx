@@ -5,7 +5,7 @@ import { getCycleForDate, getCycleDates, shortDate, dowLabel } from '@/lib/cycle
 import { ReportPreview } from '@/components/ReportPreview'
 import { UploadZone } from '@/components/UploadZone'
 import { ReportData } from '@/types'
-import { format, addDays, parseISO } from 'date-fns'
+import { format, addDays } from 'date-fns'
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 
@@ -49,18 +49,23 @@ export default function Home() {
   const [authError, setAuthError] = useState('')
 
   const { cycleStart, cycleEnd, dayNum } = getCycleForDate()
+  const cycleStartStr = format(cycleStart, 'yyyy-MM-dd')
+  const cycleEndStr = format(cycleEnd, 'yyyy-MM-dd')
+  const cycleProgress = Math.round((dayNum / 14) * 100)
+
   const yesterday = format(addDays(new Date(), -1), 'yyyy-MM-dd')
   const [uploadDate, setUploadDate] = useState(yesterday)
 
   const [empeonStatus, setEmpeonStatus] = useState<UploadStatus>('idle')
   const [empeonMsg, setEmpeonMsg] = useState('')
+
+  // ShiftKey two-step state
   const [shiftkeyStatus, setShiftkeyStatus] = useState<UploadStatus>('idle')
   const [shiftkeyMsg, setShiftkeyMsg] = useState('')
-
   const [shiftkeyFile, setShiftkeyFile] = useState<File | null>(null)
-const [shiftkeyAvailableDates, setShiftkeyAvailableDates] = useState<{ date: string; rowCount: number }[]>([])
-const [shiftkeySelectedDates, setShiftkeySelectedDates] = useState<Set<string>>(new Set())
-const [shiftkeyParsing, setShiftkeyParsing] = useState(false)
+  const [shiftkeyAvailableDates, setShiftkeyAvailableDates] = useState<{ date: string; rowCount: number }[]>([])
+  const [shiftkeySelectedDates, setShiftkeySelectedDates] = useState<Set<string>>(new Set())
+  const [shiftkeyParsing, setShiftkeyParsing] = useState(false)
 
   const [census, setCensus] = useState<string>('')
   const [censusDate, setCensusDate] = useState(yesterday)
@@ -73,6 +78,7 @@ const [shiftkeyParsing, setShiftkeyParsing] = useState(false)
   const [sendingEmail, setSendingEmail] = useState(false)
   const [emailMsg, setEmailMsg] = useState('')
 
+  // History panel
   const [showHistory, setShowHistory] = useState(false)
   const [historyDays, setHistoryDays] = useState<CycleDay[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -81,10 +87,6 @@ const [shiftkeyParsing, setShiftkeyParsing] = useState(false)
   const [clearingDay, setClearingDay] = useState<string | null>(null)
 
   const reportRef = useRef<HTMLDivElement>(null)
-
-  const cycleStartStr = format(cycleStart, 'yyyy-MM-dd')
-  const cycleEndStr = format(cycleEnd, 'yyyy-MM-dd')
-  const cycleProgress = Math.round((dayNum / 14) * 100)
 
   useEffect(() => {
     supabase.from('facilities').select('*').eq('active', true).then(({ data }) => {
@@ -96,9 +98,11 @@ const [shiftkeyParsing, setShiftkeyParsing] = useState(false)
     if (!selectedFacility || !authed || !censusDate) return
     setCensus('')
     setCensusSaved(false)
-    supabase.from('daily_census').select('census').eq('facility_id', selectedFacility.id).eq('date', censusDate).single().then(({ data }) => {
-      if (data) setCensus(String(data.census))
-    })
+    supabase.from('daily_census').select('census')
+      .eq('facility_id', selectedFacility.id)
+      .eq('date', censusDate)
+      .single()
+      .then(({ data }) => { if (data) setCensus(String(data.census)) })
   }, [selectedFacility, authed, censusDate])
 
   function handleSelectFacility(fac: any) {
@@ -127,6 +131,7 @@ const [shiftkeyParsing, setShiftkeyParsing] = useState(false)
     setReportData(null)
   }
 
+  // ── Empeon upload ────────────────────────────────────
   async function handleEmpeonUpload(file: File) {
     setEmpeonStatus('uploading')
     setEmpeonMsg('')
@@ -148,65 +153,65 @@ const [shiftkeyParsing, setShiftkeyParsing] = useState(false)
     }
   }
 
+  // ── ShiftKey two-step upload ─────────────────────────
   async function handleShiftkeyFileSelected(file: File) {
-  setShiftkeyFile(file)
-  setShiftkeyStatus('uploading')
-  setShiftkeyMsg('')
-  setShiftkeyAvailableDates([])
-  setShiftkeySelectedDates(new Set())
-  setShiftkeyParsing(true)
-  const fd = new FormData()
-  fd.append('file', file)
-  fd.append('facilityId', selectedFacility.id)
-  const res = await fetch('/api/shiftkey-dates', { method: 'POST', body: fd })
-  const json = await res.json()
-  setShiftkeyParsing(false)
-  if (res.ok && json.dates?.length > 0) {
-    setShiftkeyAvailableDates(json.dates)
-    // Auto-select all dates by default
-    setShiftkeySelectedDates(new Set(json.dates.map((d: any) => d.date)))
+    setShiftkeyFile(file)
     setShiftkeyStatus('idle')
-    setShiftkeyMsg(`${json.dates.length} date(s) found — select which to import`)
-  } else {
-    setShiftkeyStatus('error')
-    setShiftkeyMsg(json.error || 'No valid rows found')
-  }
-}
-
-async function handleShiftkeyConfirm() {
-  if (!shiftkeyFile || shiftkeySelectedDates.size === 0) return
-  setShiftkeyStatus('uploading')
-  setShiftkeyMsg('')
-  const fd = new FormData()
-  fd.append('file', shiftkeyFile)
-  fd.append('facilityId', selectedFacility.id)
-  fd.append('selectedDates', JSON.stringify([...shiftkeySelectedDates]))
-  const res = await fetch('/api/upload-shiftkey', { method: 'POST', body: fd })
-  const json = await res.json()
-  if (res.ok) {
-    setShiftkeyStatus('success')
-    setShiftkeyMsg(`✓ ${json.rowsIngested} rows saved for: ${json.datesSaved.join(', ')}`)
+    setShiftkeyMsg('')
     setShiftkeyAvailableDates([])
-    setShiftkeyFile(null)
-  } else {
-    setShiftkeyStatus('error')
-    setShiftkeyMsg(json.error || 'Upload failed')
+    setShiftkeySelectedDates(new Set())
+    setShiftkeyParsing(true)
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('facilityId', selectedFacility.id)
+    const res = await fetch('/api/shiftkey-dates', { method: 'POST', body: fd })
+    const json = await res.json()
+    setShiftkeyParsing(false)
+    if (res.ok && json.dates?.length > 0) {
+      setShiftkeyAvailableDates(json.dates)
+      setShiftkeySelectedDates(new Set(json.dates.map((d: any) => d.date)))
+      setShiftkeyMsg(`${json.dates.length} date(s) found — select which to import`)
+    } else {
+      setShiftkeyStatus('error')
+      setShiftkeyMsg(json.error || 'No valid rows found')
+    }
   }
-}
 
+  async function handleShiftkeyConfirm() {
+    if (!shiftkeyFile || shiftkeySelectedDates.size === 0) return
+    setShiftkeyStatus('uploading')
+    setShiftkeyMsg('')
+    const fd = new FormData()
+    fd.append('file', shiftkeyFile)
+    fd.append('facilityId', selectedFacility.id)
+    fd.append('selectedDates', JSON.stringify([...shiftkeySelectedDates]))
+    const res = await fetch('/api/upload-shiftkey', { method: 'POST', body: fd })
+    const json = await res.json()
+    if (res.ok) {
+      setShiftkeyStatus('success')
+      setShiftkeyMsg(`✓ ${json.rowsIngested} rows saved for: ${json.datesSaved.join(', ')}`)
+      setShiftkeyAvailableDates([])
+      setShiftkeyFile(null)
+    } else {
+      setShiftkeyStatus('error')
+      setShiftkeyMsg(json.error || 'Upload failed')
+    }
+  }
+
+  // ── Census ───────────────────────────────────────────
   async function handleSaveCensus() {
-  const res = await fetch('/api/save-census', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ facilityId: selectedFacility.id, date: censusDate, census: parseInt(census) }),
-  })
-  if (res.ok) {
-    setCensusSaved(true)
-    // Refresh history panel if open so the new census shows immediately
-    if (showHistory) loadHistory()
+    const res = await fetch('/api/save-census', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ facilityId: selectedFacility.id, date: censusDate, census: parseInt(census) }),
+    })
+    if (res.ok) {
+      setCensusSaved(true)
+      if (showHistory) loadHistory()
+    }
   }
-}
 
+  // ── Report ───────────────────────────────────────────
   async function handleLoadReport() {
     setLoadingReport(true)
     const res = await fetch(`/api/report-data?facilityId=${selectedFacility.id}&reportDate=${uploadDate}`)
@@ -317,7 +322,7 @@ async function handleShiftkeyConfirm() {
     loadHistory()
   }
 
-  // ── Shared style helpers ─────────────────────────────
+  // ── Style helpers ────────────────────────────────────
   const card: React.CSSProperties = {
     background: C.white, border: `0.5px solid ${C.border}`,
     borderRadius: 10, padding: '20px 24px', marginBottom: 12,
@@ -347,7 +352,7 @@ async function handleShiftkeyConfirm() {
     cursor: 'pointer', fontFamily: "'IBM Plex Sans',sans-serif", whiteSpace: 'nowrap',
   })
 
-  // ── Facility row ─────────────────────────────────────
+  // ── Facility row component ───────────────────────────
   function FacilityRow({ fac }: { fac: any }) {
     const selected = selectedFacility?.id === fac.id
     return (
@@ -361,11 +366,7 @@ async function handleShiftkeyConfirm() {
           transition: 'all 0.1s',
         }}
       >
-        <div style={{
-          width: 34, height: 34, borderRadius: 8, flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: selected ? 'rgba(255,255,255,0.18)' : '#F4F2EB',
-        }}>
+        <div style={{ width: 34, height: 34, borderRadius: 8, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: selected ? 'rgba(255,255,255,0.18)' : '#F4F2EB' }}>
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={selected ? '#fff' : '#888780'} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M3 21h18M3 7l9-4 9 4M4 7v14M20 7v14M9 21v-4a3 3 0 0 1 6 0v4" />
           </svg>
@@ -405,7 +406,7 @@ async function handleShiftkeyConfirm() {
         </a>
       </div>
 
-      {/* ── Facility selection screen (pre-auth) ── */}
+      {/* ── Pre-auth: facility selection screen ── */}
       {!authed && (
         <div style={{ maxWidth: 860, margin: '0 auto', padding: '28px 24px' }}>
           <div style={{ background: C.white, border: `0.5px solid ${C.borderMid}`, borderRadius: 12, overflow: 'hidden' }}>
@@ -417,7 +418,6 @@ async function handleShiftkeyConfirm() {
                   <div style={{ fontSize: 17, fontWeight: 500, color: C.text, letterSpacing: '-0.02em', marginBottom: 5 }}>Select a facility</div>
                   <div style={{ fontSize: 12, color: C.textMuted, lineHeight: 1.65 }}>Enter your facility passcode to upload payroll data and generate reports.</div>
                 </div>
-                {/* Cycle card */}
                 <div style={{ background: C.bluePale, border: `0.5px solid ${C.blueMid}`, borderRadius: 10, padding: '16px 18px' }}>
                   <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: C.blue, marginBottom: 10 }}>Active payroll cycle</div>
                   <div style={{ fontSize: 14, fontWeight: 500, color: C.blueDark, marginBottom: 2 }}>
@@ -440,8 +440,6 @@ async function handleShiftkeyConfirm() {
                 <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase' as const, color: C.textFaint, marginBottom: 12 }}>Facilities</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {facilities.map(f => <FacilityRow key={f.id} fac={f} />)}
-
-                  {/* Inline passcode */}
                   {selectedFacility && (
                     <div style={{ background: C.bg, border: `0.5px solid ${C.borderMid}`, borderRadius: 10, padding: '14px 16px', marginTop: 2 }}>
                       <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase' as const, color: C.textFaint, marginBottom: 8 }}>
@@ -496,7 +494,7 @@ async function handleShiftkeyConfirm() {
       {authed && selectedFacility && (
         <div style={{ maxWidth: 900, margin: '0 auto', padding: '24px 24px' }}>
 
-          {/* Facility header bar */}
+          {/* Facility header */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <div style={{ fontSize: 15, fontWeight: 500, color: C.text }}>{selectedFacility.name}</div>
@@ -514,44 +512,89 @@ async function handleShiftkeyConfirm() {
           </div>
 
           {/* Upload card */}
-        <div>
-  <UploadZone label="ShiftKey XLS" accept=".xls,.xlsx" onFile={handleShiftkeyFileSelected} status={shiftkeyParsing ? 'uploading' : shiftkeyStatus} message={shiftkeyParsing ? 'Reading file…' : shiftkeyMsg} />
-  {shiftkeyAvailableDates.length > 0 && (
-    <div style={{ marginTop: 8, background: C.bg, border: `0.5px solid ${C.borderMid}`, borderRadius: 8, padding: '10px 12px' }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase' as const, marginBottom: 8 }}>
-        Select dates to import
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column' as const, gap: 5, marginBottom: 10 }}>
-        {shiftkeyAvailableDates.map(({ date, rowCount }) => (
-          <label key={date} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', color: C.textSoft }}>
-            <input
-              type="checkbox"
-              checked={shiftkeySelectedDates.has(date)}
-              onChange={() => {
-                setShiftkeySelectedDates(prev => {
-                  const next = new Set(prev)
-                  next.has(date) ? next.delete(date) : next.add(date)
-                  return next
-                })
-              }}
-              style={{ accentColor: C.blue }}
-            />
-            <span style={{ fontFamily: "'IBM Plex Mono',sans-serif" }}>{date}</span>
-            <span style={{ fontSize: 11, color: C.textFaint }}>{rowCount} row{rowCount !== 1 ? 's' : ''}</span>
-          </label>
-        ))}
-      </div>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <button onClick={handleShiftkeyConfirm} disabled={shiftkeySelectedDates.size === 0} style={{ ...btnSecondary(C.green, C.greenLight), opacity: shiftkeySelectedDates.size === 0 ? 0.5 : 1 }}>
-          Import {shiftkeySelectedDates.size} date{shiftkeySelectedDates.size !== 1 ? 's' : ''}
-        </button>
-        <button onClick={() => { setShiftkeyAvailableDates([]); setShiftkeyFile(null); setShiftkeyStatus('idle'); setShiftkeyMsg('') }} style={btnSecondary(C.textMuted, C.bgStrip)}>
-          Cancel
-        </button>
-      </div>
-    </div>
-  )}
-</div>
+          <div style={card}>
+            <div style={{ fontSize: 14, fontWeight: 500, color: C.text, marginBottom: 16 }}>Upload data</div>
+            <div style={{ marginBottom: 14 }}>
+              <label style={labelStyle}>Report date</label>
+              <input type="date" value={uploadDate} onChange={e => handleDateChange(e.target.value)} style={{ ...inputStyle, width: 180 }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16 }}>
+              <UploadZone label="Empeon CSV" accept=".csv" onFile={handleEmpeonUpload} status={empeonStatus} message={empeonMsg} />
+
+              {/* ShiftKey two-step */}
+              <div>
+                <UploadZone
+                  label="ShiftKey XLS"
+                  accept=".xls,.xlsx"
+                  onFile={handleShiftkeyFileSelected}
+                  status={shiftkeyParsing ? 'uploading' : shiftkeyStatus}
+                  message={shiftkeyParsing ? 'Reading file…' : shiftkeyMsg}
+                />
+                {shiftkeyAvailableDates.length > 0 && (
+                  <div style={{ marginTop: 8, background: C.bg, border: `0.5px solid ${C.borderMid}`, borderRadius: 8, padding: '10px 12px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: C.textMuted, letterSpacing: '0.06em', textTransform: 'uppercase' as const, marginBottom: 8 }}>
+                      Select dates to import
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 10 }}>
+                      {shiftkeyAvailableDates.map(({ date, rowCount }) => (
+                        <label key={date} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', color: C.textSoft }}>
+                          <input
+                            type="checkbox"
+                            checked={shiftkeySelectedDates.has(date)}
+                            onChange={() => {
+                              setShiftkeySelectedDates(prev => {
+                                const next = new Set(prev)
+                                next.has(date) ? next.delete(date) : next.add(date)
+                                return next
+                              })
+                            }}
+                            style={{ accentColor: C.blue }}
+                          />
+                          <span style={{ fontFamily: "'IBM Plex Mono',sans-serif" }}>{date}</span>
+                          <span style={{ fontSize: 11, color: C.textFaint }}>{rowCount} row{rowCount !== 1 ? 's' : ''}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        onClick={handleShiftkeyConfirm}
+                        disabled={shiftkeySelectedDates.size === 0}
+                        style={{ ...btnSecondary(C.green, C.greenLight), opacity: shiftkeySelectedDates.size === 0 ? 0.5 : 1 }}
+                      >
+                        Import {shiftkeySelectedDates.size} date{shiftkeySelectedDates.size !== 1 ? 's' : ''}
+                      </button>
+                      <button
+                        onClick={() => { setShiftkeyAvailableDates([]); setShiftkeyFile(null); setShiftkeyStatus('idle'); setShiftkeyMsg('') }}
+                        style={btnSecondary(C.textMuted, C.bgStrip)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Census */}
+            <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+              <div>
+                <label style={labelStyle}>Census for {uploadDate}</label>
+                <input
+                  type="number"
+                  value={census}
+                  onChange={e => { setCensus(e.target.value); setCensusSaved(false) }}
+                  style={{ ...inputStyle, width: 120 }}
+                  placeholder="e.g. 88"
+                />
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <button onClick={handleSaveCensus} style={btnSecondary(C.green, C.greenLight)}>
+                  {censusSaved ? '✓ Saved' : 'Save census'}
+                </button>
+                <div style={{ fontSize: 10, color: C.textFaint, textAlign: 'center' }}>Required for PPD</div>
+              </div>
+            </div>
+          </div>
 
           {/* Cycle history */}
           <div style={card}>
